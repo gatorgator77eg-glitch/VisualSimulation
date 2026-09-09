@@ -1,0 +1,1638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Physics Simulation Lab</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel2: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  /* ---------- Top bar ---------- */
+  #topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 14px; background: var(--panel);
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  #topbar h1 { font-size: 15px; font-weight: 600; margin-right: 8px; white-space: nowrap; }
+  #topbar h1 span { color: var(--accent); }
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    padding: 6px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    font-size: 13px; font-weight: 500;
+  }
+  .tab:hover { color: var(--text); background: var(--panel2); }
+  .tab.active { color: var(--text); background: var(--panel2); border-color: var(--border); }
+  .topbtn {
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+  }
+  .topbtn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+  .topbtn.primary:hover { background: #388bfd; }
+  .topbtn:hover { border-color: var(--accent); }
+  .topbtn:disabled { opacity: .45; cursor: default; }
+  #speedwrap { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  #speedwrap input { width: 90px; accent-color: var(--accent); }
+  #statusdot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); margin-left: auto; }
+  #statustext { font-size: 12px; color: var(--muted); }
+  /* ---------- Main layout ---------- */
+  #main { flex: 1; display: flex; min-height: 0; }
+  #sidebar {
+    width: 340px; min-width: 280px; background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow-y: auto;
+  }
+  #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #canvaswrap { flex: 1; position: relative; min-height: 0; background: #090c10; }
+  canvas#sim { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #hint {
+    position: absolute; top: 10px; left: 12px; font-size: 11.5px; color: var(--muted);
+    background: rgba(13,17,23,.75); padding: 4px 8px; border-radius: 4px; pointer-events: none;
+  }
+  /* ---------- Sidebar sections ---------- */
+  .section { border-bottom: 1px solid var(--border); padding: 10px 14px; }
+  .section h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .section h2 .resetlink {
+    font-size: 10px; color: var(--accent); cursor: pointer; text-transform: none; letter-spacing: 0;
+  }
+  #eqname { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--accent); margin-bottom: 6px; }
+  #eqsig { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--muted); margin-bottom: 6px; line-height: 1.5; }
+  #eqdesc { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; line-height: 1.45; }
+  #eqeditor {
+    width: 100%; min-height: 84px; resize: vertical;
+    background: #0d1117; color: #c9d1d9; border: 1px solid var(--border); border-radius: 6px;
+    font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12.5px; line-height: 1.5;
+    padding: 8px; tab-size: 2;
+  }
+  #eqeditor:focus { outline: none; border-color: var(--accent); }
+  #eqerr {
+    display: none; margin-top: 8px; padding: 6px 9px; border-radius: 6px;
+    background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.45);
+    color: var(--red); font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    white-space: pre-wrap; word-break: break-word; max-height: 90px; overflow-y: auto;
+  }
+  #eqok { display: none; margin-top: 8px; color: var(--green); font-size: 11px; }
+  /* sliders */
+  .param { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 12px; }
+  .param label { width: 120px; color: var(--muted); flex-shrink: 0; }
+  .param input[type=range] { flex: 1; accent-color: var(--accent); }
+  .param .val { width: 48px; text-align: right; font-family: ui-monospace, Consolas, monospace; color: var(--text); }
+  .togglerow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 6px; color: var(--text); }
+  .togglerow input { accent-color: var(--accent); }
+  /* presets */
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .preset {
+    padding: 4px 10px; font-size: 11.5px; border-radius: 5px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel2); color: var(--muted);
+  }
+  .preset:hover { color: var(--text); border-color: var(--accent); }
+  .preset.active { color: var(--accent); border-color: var(--accent); }
+  /* ---------- Histogram strip ---------- */
+  #histo {
+    height: 190px; background: var(--panel); border-top: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  #histohead {
+    display: flex; align-items: center; gap: 14px; padding: 5px 14px; font-size: 11.5px; color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  #histohead b { color: var(--text); font-size: 12px; font-weight: 600; }
+  #histohead input[type=range] { width: 100px; accent-color: var(--accent); }
+  #histostats { margin-left: auto; font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+  #histohead .topbtn { padding: 2px 8px; font-size: 11px; }
+  #histocanvas { flex: 1; width: 100%; display: block; }
+  /* keyboard help */
+  #keys { font-size: 11px; color: var(--muted); line-height: 1.7; }
+  #keys kbd {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 3px;
+    padding: 0 5px; font-family: ui-monospace, monospace; font-size: 10px;
+  }
+  @media (max-width: 900px) { #sidebar { width: 260px; min-width: 220px; } }
+  @media (max-width: 760px) {
+    #topbar { gap: 6px; padding: 6px 10px; }
+    #topbar h1 { font-size: 13px; margin-right: 2px; }
+    .tab { padding: 5px 9px; font-size: 12px; }
+    .topbtn { padding: 5px 10px; font-size: 12px; }
+    #speedwrap input { width: 64px; }
+    #main { flex-direction: column; }
+    #sidebar {
+      width: 100%; min-width: 0; max-height: 38%;
+      border-right: none; border-bottom: 1px solid var(--border);
+    }
+    #canvaswrap { min-height: 180px; }
+    #histo { height: 120px; }
+    #eqeditor { min-height: 56px; }
+    #eqdesc { display: none; }
+    #hint { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <h1>⚛ Physics <span>Sim</span> Lab</h1>
+    <div class="tabs" id="tabs"></div>
+    <button class="topbtn primary" id="btnDrop">▶ Drop balls</button>
+    <button class="topbtn" id="btnPause">⏸ Pause</button>
+    <button class="topbtn" id="btnClear">✕ Clear</button>
+    <div id="speedwrap">speed <input type="range" id="speed" min="0.25" max="4" step="0.25" value="1"><span id="speedval">1×</span></div>
+    <div id="statusdot"></div><div id="statustext">ready</div>
+  </div>
+
+  <div id="main">
+    <div id="sidebar">
+      <div class="section">
+        <h2>Equation — edit me live <span class="resetlink" id="eqreset">reset</span></h2>
+        <div id="eqname"></div>
+        <div id="eqsig"></div>
+        <div id="eqdesc"></div>
+        <textarea id="eqeditor" spellcheck="false"></textarea>
+        <div id="eqerr"></div>
+        <div id="eqok">✓ compiled</div>
+      </div>
+      <div class="section">
+        <h2>Parameters</h2>
+        <div id="params"></div>
+      </div>
+      <div class="section" id="presetSection" style="display:none">
+        <h2>Presets</h2>
+        <div class="presets" id="presets"></div>
+      </div>
+      <div class="section">
+        <h2>Display</h2>
+        <div class="togglerow"><input type="checkbox" id="trails"><label for="trails">Motion trails</label></div>
+        <div class="togglerow"><input type="checkbox" id="showTheory" checked><label for="showTheory">Theoretical curve overlay</label></div>
+        <div class="togglerow"><input type="checkbox" id="colorBySpeed" checked><label for="colorBySpeed">Color particles by speed</label></div>
+      </div>
+      <div class="section">
+        <h2>Shortcuts</h2>
+        <div id="keys">
+          <kbd>Space</kbd> drop balls &nbsp; <kbd>P</kbd> pause &nbsp; <kbd>C</kbd> clear &nbsp;          <kbd>1..9</kbd> switch mode
+        </div>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div id="canvaswrap">
+        <canvas id="sim"></canvas>
+        <div id="hint"></div>
+      </div>
+      <div id="histo">
+        <div id="histohead">
+          <b id="histoLabel">Distribution of final X</b>
+          <span>bins <input type="range" id="bins" min="8" max="80" step="2" value="40"></span>
+          <button class="topbtn" id="btnCsv" title="Download histogram as CSV">⬇ CSV</button>
+          <button class="topbtn" id="btnPng" title="Save canvas snapshot as PNG">⬇ PNG</button>
+          <span id="histostats">n=0</span>
+        </div>
+        <canvas id="histocanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+/* =========================================================================
+   Physics Simulation Lab — single file, zero dependencies.
+   Three modes, each exposing ONE editable equation compiled live with
+   new Function(). A shared engine handles particles, fixed-timestep
+   integration, rendering, and the final-X histogram.
+   ========================================================================= */
+
+// ---------- helpers -------------------------------------------------------
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// deterministic-ish but fast RNG for reproducible runs
+let rngState = 123456789;
+function rng() { rngState = (Math.imul(rngState, 1103515245) + 12345) & 0x7fffffff; return rngState / 0x7fffffff; }
+function gauss() { // Box-Muller
+  let u = 0, v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+function speedColor(sp, maxSp) {
+  const t = clamp(sp / (maxSp || 1), 0, 1);
+  const h = 210 - 210 * t;            // blue → red
+  return `hsl(${h}, 85%, ${55 + 10 * t}%)`;
+}
+// classic RK4 for a state vector, f(state) -> derivative
+function rk4(s, h, f) {
+  const k1 = f(s);
+  const s2 = s.map((v, i) => v + h / 2 * k1[i]); const k2 = f(s2);
+  const s3 = s.map((v, i) => v + h / 2 * k2[i]); const k3 = f(s3);
+  const s4 = s.map((v, i) => v + h * k3[i]);  const k4 = f(s4);
+  return s.map((v, i) => v + h / 6 * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
+}
+// push a sample into the distribution histogram (bounded)
+function pushSample(x) {
+  if (!isFinite(x)) return;
+  hist.xs.push(x);
+  if (hist.xs.length > 40000) hist.xs.splice(0, hist.xs.length - 40000);
+  hist.dirty = true;
+}
+
+// ---------- equation compiler --------------------------------------------
+// Compiles user code into fn(...args) -> value. Returns {fn, err}.
+function compileEq(code, argNames, bodyMustReturn) {
+  try {
+    const f = new Function(...argNames, `"use strict";\n${code}`);
+    // smoke test with benign inputs; signatures that destructure arrays/objects
+    // will throw on scalars, so a probe exception is not an error — runtime
+    // problems are caught (and reported) per-step instead.
+    try {
+      const probe = argNames.map(() => 0.5);
+      const out = f(...probe);
+      if (bodyMustReturn && (out === undefined)) return { fn: null, err: "Equation returned undefined — add a `return` statement." };
+    } catch (_) { /* probe incompatible with signature — fine */ }
+    return { fn: f, err: null };
+  } catch (e) { return { fn: null, err: e.message }; }
+}
+
+// ---------- canvas setup --------------------------------------------------
+const canvas = $("sim"), ctx = canvas.getContext("2d");
+const hcanvas = $("histocanvas"), hctx = hcanvas.getContext("2d");
+let W = 100, H = 100;                       // css pixel size of sim canvas
+let HW = 100, HH = 100;                     // histogram canvas
+function resize() {
+  const wrap = $("canvaswrap"), r = wrap.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  W = Math.max(50, r.width); H = Math.max(50, r.height);
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const hr = hcanvas.getBoundingClientRect();
+  HW = Math.max(50, hr.width); HH = Math.max(50, hr.height);
+  hcanvas.width = HW * dpr; hcanvas.height = HH * dpr;
+  hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (mode) { mode.layout(); mode.draw(); }
+  drawHistogram();
+}
+window.addEventListener("resize", resize);
+
+// ---------- particles ------------------------------------------------------
+// Particle: {x,y,vx,vy, alive, data:{...mode-specific}}
+let particles = [];
+let mode = null;
+let paused = false;
+let speedMul = 1;
+let simTime = 0;
+
+// histogram of "landed" particles' final x
+const hist = { xs: [], dirty: true };
+function recordLanding(p) { hist.xs.push(p.x); hist.dirty = true; }
+function clearLanding() { hist.xs = []; hist.dirty = true; }
+
+// ---------- physics loop --------------------------------------------------
+const DT = 1 / 120;                          // fixed physics timestep (s)
+let accumulator = 0, lastT = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const realDt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  if (paused) { mode.draw(); drawHistogram(); return; }
+  accumulator += realDt * speedMul;
+  let steps = 0;
+  while (accumulator >= DT && steps < 600) {   // budget: never wedge the tab
+    mode.step(DT);
+    simTime += DT;
+    accumulator -= DT;
+    steps++;
+  }
+  if (steps >= 600) accumulator = 0;           // drop backlog if overloaded
+  frameCount++;
+  mode.draw();
+  drawHistogram();
+}
+
+// ==========================================================================
+//  GALTON BOARD
+// ==========================================================================
+const galton = {
+  id: "galton",
+  label: "Galton Board",
+  hint: "Balls bounce off pegs — each row is a Bernoulli trial. With p=0.5 the bottom histogram converges to the normal distribution.",
+  histLabel: "Landing position (binomial → normal)",
+  eqName: "pDeflectRight(row, x, params)",
+  eqSig: "row: 0..rows-1 · x: ball position (px) · returns: probability [0..1] of going right",
+  eqDesc: "Default is a fair coin flip every row → binomial → normal. Make p depend on x (or row) to bias the distribution — the histogram updates live.",
+  eqSpec: { argNames: ["row", "x", "params"], mustReturn: true },
+  defaultCode:
+`// probability that a ball deflects RIGHT at this peg
+// row: 0..params.rows-1, x: horizontal position (px)
+let p = 0.5;
+
+// try me: bias toward the right edge
+// p = 0.5 + 0.3 * row / params.rows;
+
+// try me: wall-hugger (balls cling to sides)
+// p = x < params.width/2 ? 0.75 : 0.25;
+
+// try me: sinusoidal bias field
+// p = 0.5 + 0.35 * Math.sin(x / 60);
+
+return p;`,
+  params: [
+    { key: "rows",     label: "Peg rows",    min: 4,  max: 26,   step: 1,     value: 13 },
+    { key: "rate",     label: "Balls/sec",   min: 2,  max: 120,  step: 1,     value: 30 },
+    { key: "gap",      label: "Peg spacing", min: 18, max: 60,   step: 1,     value: 34 },
+    { key: "rest",     label: "Bounciness",  min: 0.2, max: 1.2, step: 0.05,  value: 0.55 },
+    { key: "width",    label: "Width (px)",  min: 300, max: 1600, step: 20,   value: 760 },
+    { key: "jitter",   label: "Randomness",  min: 0,  max: 1,    step: 0.05,  value: 0.25 },
+  ],
+  P: {},
+  pegs: [], // {x,y}
+  spawnAcc: 0,
+  binCounts: {},
+
+  init() { this.rebuildPegs(); this.spawnAcc = 0; this.binCounts = {}; },
+  rebuildPegs() {
+    this.pegs = [];
+    const rows = this.P.rows, gap = this.P.gap, cw = this.P.width;
+    for (let r = 0; r < rows; r++) {
+      const y = 60 + r * gap;
+      const count = r + 3;
+      for (let i = 0; i < count; i++) {
+        // board coords are centered at x=0: pegs span [-half, half]
+        this.pegs.push({ x: (i - (count - 1) / 2) * gap, y });
+      }
+    }
+    this.floorY = 60 + rows * gap + gap * 0.9;
+  },
+  layout() { this.rebuildPegs(); },
+  onParam(key) { if (key === "rows" || key === "gap" || key === "width") { clearParticles(); this.rebuildPegs(); this.binCounts = {}; } },
+
+  queue: 0,
+
+  drop(n) {
+    this.queue += n;
+    setStatus(`${this.queue} balls queued`);
+  },
+
+  step(dt) {
+    // spawn from queue at the configured rate
+    this.spawnAcc += this.P.rate * dt;
+    while (this.spawnAcc >= 1 && this.queue > 0 && particles.length < 1500) {
+      this.spawnAcc -= 1;
+      this.queue--;
+      particles.push({
+        x: gauss() * 3, y: 20, vx: gauss() * 8, vy: 30,
+        alive: true, r: 4.5, data: { row: -1, landed: false }
+      });
+    }
+    if (this.spawnAcc > 1) this.spawnAcc = 1; // don't accumulate while queue empty
+    const g = 900; // px/s²
+    for (const p of particles) {
+      if (!p.alive || p.data.landed) continue;
+      p.vy += g * dt;
+      // peg collisions — the Galton gate
+      for (const peg of this.pegs) {
+        const dx = p.x - peg.x, dy = p.y - peg.y;
+        const rr = p.r + 5;
+        if (dx * dx + dy * dy < rr * rr && p.vy > -20) {
+          let pr;
+          try { pr = this.eq(p.data.row + 1, peg.x, this.P); }
+          catch (e) { eqRuntimeError(e); pr = 0.5; }
+          if (!isFinite(pr)) pr = 0.5;
+          pr = clamp(pr, 0, 1);
+          const dir = rng() < pr ? 1 : -1;
+          p.data.row++;
+          // deflect: lateral kick proportional to peg gap → per-row spread ≈ gap/2,
+          // so after N rows σ ≈ gap·√N/2 (matches binomial theory)
+          const kick = this.P.gap * (1.1 + 0.9 * rng() * (0.5 + this.P.jitter));
+          p.vx = dir * kick;
+          p.vy = -Math.abs(p.vy) * 0.12 * this.P.rest - 20;
+          // nudge out of the peg so we don't re-trigger every step
+          const d = Math.hypot(dx, dy) || 1;
+          p.x = peg.x + (dx / d) * rr * 1.05;
+          p.y = peg.y + (dy / d) * rr * 1.05;
+          break;
+        }
+      }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      // side walls (funnel)
+      const half = this.P.width / 2;
+      if (p.x < -half + 4) { p.x = -half + 4; p.vx = Math.abs(p.vx) * 0.4; }
+      if (p.x >  half - 4) { p.x =  half - 4; p.vx = -Math.abs(p.vx) * 0.4; }
+      // landed in bins
+      if (p.y >= this.floorY && !p.data.landed) {
+        p.data.landed = true;
+        p.vy = 0; p.vx = 0;
+        const bin = clamp(Math.floor((p.x + half) / this.P.gap), 0, 999);
+        this.binCounts[bin] = (this.binCounts[bin] || 0) + 1;
+        p.y = this.floorY - 4 - Math.min(this.binCounts[bin], 16) * 7;
+        recordLanding(p);
+      }
+    }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    // auto-fit: scale the board to the visible canvas
+    const fit = Math.min(W / (this.P.width + 60), H / (this.floorY + 110));
+    ctx.translate(W / 2, 8);
+    ctx.scale(fit, fit);
+    const half = this.P.width / 2;
+    // funnel walls
+    ctx.strokeStyle = "#30363d"; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-half, 0); ctx.lineTo(-half, this.floorY + 40);
+    ctx.moveTo(half, 0);  ctx.lineTo(half, this.floorY + 40);
+    ctx.stroke();
+    // pegs
+    ctx.fillStyle = "#58a6ff";
+    for (const peg of this.pegs) { ctx.beginPath(); ctx.arc(peg.x, peg.y, 3.2, 0, 7); ctx.fill(); }
+    // floor + bins
+    ctx.strokeStyle = "#8b949e"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-half, this.floorY); ctx.lineTo(half, this.floorY); ctx.stroke();
+    // bin separators
+    const bw = this.P.gap;
+    ctx.strokeStyle = "#21262d"; ctx.lineWidth = 1.5;
+    for (let x = -half; x <= half + 1; x += bw) {
+      ctx.beginPath(); ctx.moveTo(x, this.floorY); ctx.lineTo(x, this.floorY + 70); ctx.stroke();
+    }
+    // landed balls stack (visual)
+    ctx.fillStyle = "#3fb950";
+    for (const p of particles) {
+      if (!p.data.landed) continue;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    }
+    // flying balls
+    const maxSp = 400;
+    for (const p of particles) {
+      if (!p.alive || p.data.landed) continue;
+      ctx.fillStyle = $("colorBySpeed").checked ? speedColor(Math.hypot(p.vx, p.vy), maxSp) : "#e6edf3";
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+  },
+
+  // landing x range for histogram normalization
+  xRange() { return [-this.P.width / 2, this.P.width / 2]; },
+};
+
+// ==========================================================================
+//  PROJECTILE WITH DRAG
+// ==========================================================================
+const projectile = {
+  id: "projectile",
+  label: "Projectile + Drag",
+  hint: "Launch balls from the bottom-left with spread in angle & speed. The drag equation shapes their arc — and the landing histogram.",
+  histLabel: "Landing distance",
+  eqName: "dragForce(v, params)",
+  eqSig: "v = {x, y} velocity (px/s) · returns: {x, y} drag force (px/s²)",
+  eqDesc: "Classic: F = -k·|v|²·v̂ (quadratic). Try linear drag F = -k·v, or negative k to see the histogram fly apart.",
+  eqSpec: { argNames: ["v", "params"], mustReturn: true },
+  defaultCode:
+`// v = {x, y} — current velocity (px/s)
+// params: speed, angle, k (drag coeff), gravity, spread
+const k = params.k;
+const speed = Math.hypot(v.x, v.y) || 1e-9;
+
+// quadratic drag: opposes motion, grows with v²
+return {
+  x: -k * speed * v.x,
+  y: -k * speed * v.y
+};
+
+// try me — linear drag (viscous fluid):
+// return { x: -k * v.x, y: -k * v.y };
+
+// try me — thrust boost (anti-drag):
+// return { x: k * v.x * 0.2, y: k * v.y * 0.2 };`,
+  params: [
+    { key: "speed",   label: "Launch speed", min: 100, max: 900, step: 10,   value: 520 },
+    { key: "angle",   label: "Angle (°)",    min: 10,  max: 80,  step: 1,    value: 45 },
+    { key: "spread",  label: "Angle spread", min: 0,   max: 20,  step: 0.5,  value: 9 },
+    { key: "k",       label: "Drag coeff k", min: 0,   max: 0.02,step: 0.0005, value: 0.004 },
+    { key: "gravity", label: "Gravity",      min: 100, max: 1600, step: 20,  value: 800 },
+  ],
+  P: {},
+
+  init() {},
+  layout() {},
+
+  drop(n) {
+    const a0 = this.P.angle * Math.PI / 180;
+    for (let i = 0; i < n; i++) {
+      const a = a0 + gauss() * (this.P.spread * Math.PI / 180);
+      const s = this.P.speed * (1 + gauss() * 0.06);
+      particles.push({
+        x: 30, y: H - 40, vx: Math.cos(a) * s, vy: -Math.sin(a) * s,
+        alive: true, r: 4, data: { landed: false, trail: [] }
+      });
+    }
+    setStatus(`${n} projectiles launched`);
+  },
+
+  step(dt) {
+    for (const p of particles) {
+      if (!p.alive || p.data.landed) continue;
+      // gravity
+      p.vy += this.P.gravity * dt;
+      // user drag force
+      try {
+        const F = this.eq({ x: p.vx, y: p.vy }, this.P);
+        if (F && isFinite(F.x) && isFinite(F.y)) { p.vx += F.x * dt; p.vy += F.y * dt; }
+      } catch (e) { eqRuntimeError(e); }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if ($("trails").checked) {
+        p.data.trail.push(p.x, p.y);
+        if (p.data.trail.length > 60) p.data.trail.splice(0, 2);
+      } else if (p.data.trail.length) p.data.trail.length = 0;
+      // ground
+      if (p.y >= H - 20) {
+        p.y = H - 20; p.data.landed = true;
+        recordLanding(p);
+      }
+      if (p.x > W + 50 || p.x < -50) { p.data.landed = true; recordLanding(p); }
+    }
+  },
+
+  draw() {
+    if ($("trails").checked) ctx.clearRect(0, 0, W, H); else ctx.clearRect(0, 0, W, H);
+    // ground line
+    ctx.strokeStyle = "#30363d"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, H - 20); ctx.lineTo(W, H - 20); ctx.stroke();
+    // launcher marker
+    ctx.fillStyle = "#58a6ff";
+    ctx.beginPath(); ctx.arc(30, H - 40, 6, 0, 7); ctx.fill();
+    const a0 = this.P.angle * Math.PI / 180;
+    ctx.strokeStyle = "rgba(88,166,255,.35)";
+    ctx.beginPath(); ctx.moveTo(30, H - 40);
+    ctx.lineTo(30 + Math.cos(a0) * 70, H - 40 - Math.sin(a0) * 70); ctx.stroke();
+    // particles + trails
+    for (const p of particles) {
+      if (p.data.trail && p.data.trail.length >= 4) {
+        ctx.strokeStyle = "rgba(230,237,243,.14)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(p.data.trail[0], p.data.trail[1]);
+        for (let i = 2; i < p.data.trail.length; i += 2) ctx.lineTo(p.data.trail[i], p.data.trail[i + 1]);
+        ctx.stroke();
+      }
+      if (!p.data.landed) {
+        ctx.fillStyle = $("colorBySpeed").checked ? speedColor(Math.hypot(p.vx, p.vy), 900) : "#e6edf3";
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+      }
+    }
+  },
+
+  xRange() { return [0, W]; },
+};
+
+// ==========================================================================
+//  FORCE FIELD SANDBOX
+// ==========================================================================
+const forceField = {
+  id: "force",
+  label: "Force Field",
+  hint: "Fully general: acceleration is your equation. Particles sample the steady-state distribution — double well gives bimodal, harmonic gives normal.",
+  histLabel: "Steady-state X distribution",
+  eqName: "accel(x, y, vx, vy, t, params)",
+  eqSig: "returns: {x, y} acceleration (px/s²) · canvas: W×H px · damping is applied after your force",
+  eqDesc: "Particles random-walk under YOUR force field + damping + noise. The histogram shows where they spend their time (stationary distribution).",
+  eqSpec: { argNames: ["x", "y", "vx", "vy", "t", "params"], mustReturn: true },
+  defaultCode:
+`// Harmonic well → normal distribution at the bottom!
+// params.cx, params.cy = center; params.k = stiffness
+const dx = params.cx - x, dy = params.cy - y;
+return { x: params.k * dx, y: params.k * dy };
+
+// try me — DOUBLE WELL (bimodal histogram):
+// const pull = (params.cx - x) * params.k;
+// const well = 600 * Math.sign(params.cx - x) *
+//              (Math.abs(params.cx - x) > 120 ? 1 : -1.2);
+// return { x: pull + well, y: params.k * (params.cy - y) };
+
+// try me — VORTEX (orbiting particles):
+// const dx = params.cx - x, dy = params.cy - y;
+// return { x: params.k * dx - 1.2 * vy, y: params.k * dy + 1.2 * vx };
+
+// try me — ZERO-G DRIFT: return { x: 0, y: 0 };`,
+  params: [
+    { key: "k",       label: "Field strength", min: 0.5, max: 30, step: 0.5, value: 8 },
+    { key: "damping", label: "Damping",        min: 0,   max: 4,  step: 0.05, value: 1.2 },
+    { key: "noise",   label: "Thermal noise",  min: 0,   max: 400,step: 5,   value: 120 },
+    { key: "n",       label: "Particle count", min: 20,  max: 600,step: 10,  value: 200 },
+  ],
+  P: {},
+
+  init() { this.P.cx = W / 2; this.P.cy = H / 2; this.drop(this.P.n); },
+  layout() { this.P.cx = W / 2; this.P.cy = H / 2; },
+
+  drop(n) {
+    for (let i = 0; i < n; i++) {
+      particles.push({
+        x: 40 + rng() * (W - 80), y: 40 + rng() * (H - 80),
+        vx: 0, vy: 0, alive: true, r: 3, data: { trail: [], sample: true }
+      });
+    }
+    setStatus(`${n} particles in field`);
+  },
+
+  step(dt) {
+    // top up to target count
+    const target = this.P.n;
+    let count = particles.filter(p => p.alive).length;
+    while (count < target) { this.drop(1); count++; }
+    for (const p of particles) {
+      if (!p.alive) continue;
+      try {
+        const a = this.eq(p.x, p.y, p.vx, p.vy, simTime, this.P);
+        if (a && isFinite(a.x) && isFinite(a.y)) { p.vx += a.x * dt; p.vy += a.y * dt; }
+      } catch (e) { eqRuntimeError(e); }
+      // damping
+      const d = Math.exp(-this.P.damping * dt);
+      p.vx *= d; p.vy *= d;
+      // thermal noise (Langevin)
+      if (this.P.noise > 0) {
+        p.vx += gauss() * this.P.noise * Math.sqrt(dt);
+        p.vy += gauss() * this.P.noise * Math.sqrt(dt);
+      }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      // walls: bounce
+      if (p.x < 8)  { p.x = 8;  p.vx = Math.abs(p.vx); }
+      if (p.x > W-8){ p.x = W-8; p.vx = -Math.abs(p.vx); }
+      if (p.y < 8)  { p.y = 8;  p.vy = Math.abs(p.vy); }
+      if (p.y > H-8){ p.y = H-8; p.vy = -Math.abs(p.vy); }
+      // sample positions for the histogram (steady-state distribution)
+      if (frameCount % 4 === 0) { hist.xs.push(p.x); if (hist.xs.length > 40000) hist.xs.shift(); hist.dirty = true; }
+      if ($("trails").checked) {
+        p.data.trail.push(p.x, p.y);
+        if (p.data.trail.length > 30) p.data.trail.splice(0, 2);
+      } else if (p.data.trail.length) p.data.trail.length = 0;
+    }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    // field center marker
+    ctx.strokeStyle = "rgba(88,166,255,.5)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(this.P.cx, this.P.cy, 8, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(this.P.cx - 14, this.P.cy); ctx.lineTo(this.P.cx + 14, this.P.cy);
+    ctx.moveTo(this.P.cx, this.P.cy - 14); ctx.lineTo(this.P.cx, this.P.cy + 14); ctx.stroke();
+    for (const p of particles) {
+      if (!p.alive) continue;
+      if (p.data.trail && p.data.trail.length >= 4) {
+        ctx.strokeStyle = "rgba(230,237,243,.1)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(p.data.trail[0], p.data.trail[1]);
+        for (let i = 2; i < p.data.trail.length; i += 2) ctx.lineTo(p.data.trail[i], p.data.trail[i + 1]);
+        ctx.stroke();
+      }
+      ctx.fillStyle = $("colorBySpeed").checked ? speedColor(Math.hypot(p.vx, p.vy), 500) : "#58a6ff";
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    }
+  },
+
+  xRange() { return [0, W]; },
+};
+
+// ==========================================================================
+//  DOUBLE PENDULUM (chaos twin demos)
+// ==========================================================================
+const pendulum = {
+  id: "pendulum", label: "Double Pendulum",
+  hint: "Two chaotic twin pendulums released 0.001 rad apart. Watch their paths diverge — the histogram of θ₂ angles becomes uniform (chaos = phase-space mixing).",
+  histLabel: "θ₂ angle samples (chaos → uniform)",
+  eqName: "dtheta(state, params)",
+  eqSig: "state = [t1, w1, t2, w2] · returns: [dw1/dt, dw2/dt] (angular accelerations)",
+  eqDesc: "Standard double-pendulum equations of motion (Lagrange). Edit the accelerations — e.g. add damping or drive it — and chaos appears/disappears live.",
+  eqSpec: { argNames: ["s", "params"], mustReturn: true },
+  params: [
+    { key: "g", label: "Gravity", min: 1, max: 40, step: 0.5, value: 12 },
+    { key: "m2", label: "Bob2 mass", min: 0.2, max: 5, step: 0.1, value: 1.4 },
+    { key: "damp", label: "Damping", min: 0, max: 1.5, step: 0.05, value: 0 },
+    { key: "speed", label: "Sim speed", min: 0.2, max: 3, step: 0.1, value: 1 },
+  ],
+  defaultCode:
+`// Standard double pendulum (Lagrange), m1 = l1 = 1
+const [t1, w1, t2, w2] = s;
+const g = params.g, m2 = params.m2;
+const dt = t1 - t2;
+const den = 2 + m2 - m2 * Math.cos(2 * dt);
+const a1 = (-g * (2 + m2) * Math.sin(t1)
+            - m2 * g * Math.sin(t1 - 2 * t2)
+            - 2 * Math.sin(dt) * m2 * (w2*w2 + w1*w1 * Math.cos(dt))) / den;
+const a2 = (2 * Math.sin(dt) * (w1*w1 * (1 + m2)
+            + g * Math.cos(t1)
+            + m2 * w2*w2 * Math.cos(dt))) / den;
+return [a1, a2];
+
+// try me — heavy damping kills chaos:
+// return [a1 - 0.5 * w1, a2 - 0.5 * w2];`,
+  P: {},
+  state1: null, state2: null, phist: [], trail1: [], trail2: [], div: null,
+
+  init() {
+    this.state1 = [Math.PI / 2, 0, Math.PI / 2, 0];
+    this.state2 = [Math.PI / 2, 0, Math.PI / 2 + 0.001, 0];
+    this.phist = []; this.trail1 = []; this.trail2 = []; this.div = 0;
+  },
+  layout() {},
+  onParam(key) { if (key === "g" || key === "m2" || key === "damp") this.init(); },
+  drop(n) { this.init(); setStatus("pendulums released"); },
+
+  accels(s, P) {
+    const [t1, w1, t2, w2] = s;
+    const g = P.g, m2 = P.m2;
+    const dt = t1 - t2;
+    const den = 2 + m2 - m2 * Math.cos(2 * dt); // m1 = 1, l1 = l2 = 1
+    const a1 = (-g * (2 + m2) * Math.sin(t1) - m2 * g * Math.sin(t1 - 2 * t2)
+                - 2 * Math.sin(dt) * m2 * (w2 * w2 + w1 * w1 * Math.cos(dt))) / den;
+    const a2 = (2 * Math.sin(dt) * (w1 * w1 * (1 + m2) + g * Math.cos(t1)
+                + m2 * w2 * w2 * Math.cos(dt))) / den;
+    return [a1, a2];
+  },
+
+  step(dt) {
+    try {
+      const h = dt * this.P.speed / 2;
+      const damp = this.P.damp;
+      const deriv = s => {
+        const a = this.eq(s, this.P);
+        return [s[1], a[0] - damp * s[1], s[3], a[1] - damp * s[3]];
+      };
+      this.state1 = rk4(this.state1, h, deriv);
+      this.state2 = rk4(this.state2, h, deriv);
+      const px = W / 2, py = H * 0.30, L = Math.min(W * 0.26, H * 0.24);
+      for (const [st, tr] of [[this.state1, this.trail1], [this.state2, this.trail2]]) {
+        const x1 = px + L * Math.sin(st[0]), y1 = py + L * Math.cos(st[0]);
+        tr.push(x1 + L * Math.sin(st[2]), y1 + L * Math.cos(st[2]));
+        if (tr.length > 1000) tr.splice(0, 2);
+      }
+      this.div = Math.abs(this.state1[2] - this.state2[2]);
+      if (frameCount % 2 === 0) {
+        let th = this.state1[2] % (2 * Math.PI);
+        if (th > Math.PI) th -= 2 * Math.PI; else if (th < -Math.PI) th += 2 * Math.PI;
+        pushSample(th);
+      }
+    } catch (e) { eqRuntimeError(e); }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const px = W / 2, py = H * 0.30, L = Math.min(W * 0.26, H * 0.24);
+    const arm = (st, col, trailCol, trail) => {
+      const [t1, , t2] = st;
+      const x1 = px + L * Math.sin(t1), y1 = py + L * Math.cos(t1);
+      const x2 = x1 + L * Math.sin(t2), y2 = y1 + L * Math.cos(t2);
+      if (trail.length >= 4) {
+        ctx.strokeStyle = trailCol; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(trail[0], trail[1]);
+        for (let i = 2; i < trail.length; i += 2) ctx.lineTo(trail[i], trail[i + 1]);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "rgba(139,148,158,.55)"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.fillStyle = "#8b949e"; ctx.beginPath(); ctx.arc(px, py, 4, 0, 7); ctx.fill();
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(x1, y1, 7, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(x2, y2, 9, 0, 7); ctx.fill();
+    };
+    arm(this.state1, "#58a6ff", "rgba(88,166,255,.20)", this.trail1);
+    arm(this.state2, "#f85149", "rgba(248,81,73,.20)", this.trail2);
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText(`θ₂ divergence: ${this.div != null ? this.div.toFixed(4) : "—"}  (0.001 initial → chaos)`, 12, 20);
+  },
+
+  onPreset(p) {
+    this.init();
+    if (p.state) {
+      this.state1 = [...p.state];
+      this.state2 = [...p.state]; this.state2[2] += 0.001;
+    }
+  },
+  presets: [
+    { name: "Twin chaos (Δ=0.001)", state: [Math.PI / 2, 0, Math.PI / 2, 0] },
+    { name: "Near-upright", state: [0.2, 0, 0.2, 0] },
+    { name: "Damped", params: { damp: 0.35 }, state: [Math.PI * 0.9, 0, Math.PI * 0.9, 0] },
+    { name: "Driven chaos", params: { g: 20, damp: 0.05 }, state: [Math.PI, 0, 0, 6] },
+  ],
+  xRange() { return [-Math.PI, Math.PI]; },
+};
+
+// ==========================================================================
+//  LORENZ ATTRACTOR
+// ==========================================================================
+const lorenz = {
+  id: "lorenz", label: "Lorenz Attractor",
+  hint: "The classic butterfly. Two trajectories started 1e-9 apart end up on opposite wings — deterministic chaos. Histogram: x visits both wings (bimodal).",
+  histLabel: "x(t) samples (bimodal wings)",
+  eqName: "lorenzDeriv(s, params)",
+  eqSig: "s = [x, y, z] · returns: [dx/dt, dy/dt, dz/dt] · params: σ, ρ, β",
+  eqDesc: "σ=10, ρ=28, β=8/3 gives the butterfly. Lower ρ to ~14 for a stable spiral (chaos dies), or crank ρ for wilder wings.",
+  eqSpec: { argNames: ["s", "params"], mustReturn: true },
+  params: [
+    { key: "sigma", label: "Sigma σ", min: 0.5, max: 20, step: 0.1, value: 10 },
+    { key: "rho",   label: "Rho ρ",   min: 1,   max: 60, step: 0.5, value: 28 },
+    { key: "beta",  label: "Beta β",  min: 0.2, max: 6,  step: 0.05, value: 2.67 },
+    { key: "dtScale", label: "Speed", min: 0.2, max: 2, step: 0.05, value: 0.9 },
+  ],
+  defaultCode:
+`// The Lorenz system — edit the rates and watch the butterfly morph
+const [x, y, z] = s;
+const { sigma, rho, beta } = params;
+return [
+  sigma * (y - x),
+  x * (rho - z) - y,
+  x * y - beta * z
+];
+
+// try me — add periodic forcing:
+// return [sigma*(y-x), x*(rho-z)-y, x*y - beta*z + 2*Math.sin(s[0])];`,
+  P: {}, s1: null, s2: null, trail1: [], trail2: [],
+  init() { this.s1 = [2, 2, 22]; this.s2 = [2 + 1e-9, 2, 22]; this.trail1 = []; this.trail2 = []; },
+  layout() {},
+  onParam() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("attractor restarted"); },
+
+  step(dt) {
+    try {
+      const P = this.P, f = this.eq, h = 0.004 * P.dtScale;
+      for (let k = 0; k < 8; k++) {
+        this.s1 = rk4(this.s1, h, s => f(s, P));
+        this.s2 = rk4(this.s2, h, s => f(s, P));
+      }
+      if (!isFinite(this.s1[0]) || Math.abs(this.s1[0]) > 1e4) this.init();
+    } catch (e) { eqRuntimeError(e); return; }
+    this.trail1.push(this.s1[0], this.s1[1], this.s1[2]);
+    this.trail2.push(this.s2[0], this.s2[1], this.s2[2]);
+    if (this.trail1.length > 10500) this.trail1.splice(0, 1500);
+    if (this.trail2.length > 10500) this.trail2.splice(0, 1500);
+    pushSample(this.s1[0]);
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const sc = Math.min(W / 52, H / 66), cx = W / 2, cy = H * 0.60;
+    const ca = Math.cos(0.42), sa = Math.sin(0.42);
+    const proj = (x, y, z) => {
+      const xr = x * ca - y * sa, yr = x * sa + y * ca;
+      return [cx + xr * sc, cy - (z - this.P.rho) * sc * 0.9 + yr * sc * 0.3];
+    };
+    const drawTrail = (tr, rgb) => {
+      ctx.lineWidth = 1.2;
+      for (let i = 0; i < tr.length - 3; i += 3) {
+        const a = proj(tr[i], tr[i + 1], tr[i + 2]);
+        const b = proj(tr[i + 3], tr[i + 4], tr[i + 5]);
+        ctx.strokeStyle = `rgba(${rgb},${(0.10 + 0.5 * i / tr.length).toFixed(2)})`;
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      }
+    };
+    drawTrail(this.trail1, "88,166,255");
+    drawTrail(this.trail2, "248,81,73");
+    const p1 = proj(...this.s1), p2 = proj(...this.s2);
+    ctx.fillStyle = "#58a6ff"; ctx.beginPath(); ctx.arc(p1[0], p1[1], 3.5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(p2[0], p2[1], 3.5, 0, 7); ctx.fill();
+  },
+
+  xRange() { return [-25, 25]; },
+  presets: [
+    { name: "Classic σ=10 ρ=28", params: { sigma: 10, rho: 28, beta: 2.67 } },
+    { name: "Stable spiral ρ=14", params: { rho: 14 } },
+    { name: "Wild ρ=45", params: { rho: 45 } },
+    { name: "Twin butterflies", params: { rho: 35 } },
+  ],
+};
+
+// ==========================================================================
+//  GRAVITY ORBITS (N-body)
+// ==========================================================================
+const orbits = {
+  id: "orbits", label: "Gravity Orbits",
+  hint: "N bodies under Newtonian gravity (softened). The figure-8 choreography is a stable periodic orbit — switch to Chaos trio and watch order dissolve.",
+  histLabel: "Body-1 X position over time",
+  eqName: "gravityAccels(bodies, params)",
+  eqSig: "bodies = [{x, y, vx, vy, m}, ...] · returns: one {x, y} acceleration per body",
+  eqDesc: "Newton: F = G·m₁·m₂/r² with softening ε. Flip the sign (repulsion) or change the exponent — the choreography responds instantly.",
+  eqSpec: { argNames: ["bodies", "params"], mustReturn: true },
+  params: [
+    { key: "G", label: "G", min: 0.2, max: 4, step: 0.05, value: 1 },
+    { key: "soft", label: "Softening ε", min: 0, max: 5, step: 0.05, value: 0.05 },
+    { key: "trailLen", label: "Trail length", min: 100, max: 4000, step: 100, value: 1500 },
+  ],
+  defaultCode:
+`// Newtonian gravity with softening ε (prevents singularities)
+const G = params.G, eps2 = params.soft * params.soft;
+return bodies.map(b1 => {
+  let ax = 0, ay = 0;
+  for (const b2 of bodies) {
+    if (b2 === b1) continue;
+    const dx = b2.x - b1.x, dy = b2.y - b1.y;
+    const r2 = dx*dx + dy*dy + eps2;
+    const inv = G * b2.m / (r2 * Math.sqrt(r2));
+    ax += dx * inv; ay += dy * inv;
+  }
+  return { x: ax, y: ay };
+});
+
+// try me — repulsion (flip sign) or 1/r force:
+// ax -= dx * inv * Math.sqrt(r2) / r2;  // → r^-1 force law`,
+  P: {}, bodies: [], trails: [],
+  fig8() {
+    // Chenciner-Montgomery figure-8 choreography (G=1, equal masses)
+    // canonical ICs: x2 = -x1, v1 = v2, v3 = -2·v1
+    const px = 0.97000436, py = -0.24308753;
+    const vx = 0.46620369, vy = 0.43236573;
+    return [
+      { x:  px, y:  py, vx:  vx,     vy:  vy,     m: 1 },
+      { x: -px, y: -py, vx:  vx,     vy:  vy,     m: 1 },
+      { x:  0,  y:  0,  vx: -2 * vx, vy: -2 * vy, m: 1 },
+    ];
+  },
+  setBodies(bodies) {
+    this.bodies = bodies.map(b => ({ ...b }));
+    this.trails = this.bodies.map(() => []);
+  },
+  init() { this.setBodies(this.fig8()); },
+  layout() {},
+  onParam() {},
+  onPreset(p) {
+    if (p.bodies) this.setBodies(p.bodies);
+    else if (p.useFig8) this.setBodies(this.fig8());
+  },
+  drop(n) { this.init(); setStatus("orbits reset"); },
+
+  step(dt) {
+    try {
+      // leapfrog (kick-drift-kick), 2 substeps per physics tick
+      const h = dt * 0.6;
+      for (let sub = 0; sub < 2; sub++) {
+        let accs = this.eq(this.bodies, this.P);
+        if (!Array.isArray(accs) || accs.length !== this.bodies.length) { eqRuntimeError(new Error("return one {x,y} per body")); return; }
+        for (let i = 0; i < this.bodies.length; i++) {
+          const b = this.bodies[i], a = accs[i];
+          if (!a || !isFinite(a.x) || !isFinite(a.y)) { eqRuntimeError(new Error("non-finite acceleration")); return; }
+          b.vx += a.x * h * 0.5; b.vy += a.y * h * 0.5;
+        }
+        for (const b of this.bodies) { b.x += b.vx * h; b.y += b.vy * h; }
+        accs = this.eq(this.bodies, this.P);
+        for (let i = 0; i < this.bodies.length; i++) {
+          const b = this.bodies[i], a = accs[i];
+          b.vx += a.x * h * 0.5; b.vy += a.y * h * 0.5;
+        }
+      }
+      for (let i = 0; i < this.bodies.length; i++) {
+        const tr = this.trails[i];
+        tr.push(this.bodies[i].x, this.bodies[i].y);
+        if (tr.length > this.P.trailLen * 2) tr.splice(0, 2);
+      }
+      pushSample(this.bodies[0].x);
+      // escape guard: re-center if a body flung to oblivion
+      if (this.bodies.some(b => !isFinite(b.x) || Math.abs(b.x) > 50 || Math.abs(b.y) > 50)) this.init();
+    } catch (e) { eqRuntimeError(e); }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const sc = Math.min(W, H) * 0.40, cx = W / 2, cy = H / 2;
+    const cols = ["#58a6ff", "#f85149", "#3fb950", "#d29922", "#bc8cff"];
+    for (let i = 0; i < this.bodies.length; i++) {
+      const b = this.bodies[i], tr = this.trails[i], col = cols[i % cols.length];
+      ctx.strokeStyle = col.replace(")", ".0") ;
+      ctx.strokeStyle = col; ctx.globalAlpha = 0.35; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let k = 0; k < tr.length - 1; k += 2) {
+        const X = cx + tr[k] * sc, Y = cy - tr[k + 1] * sc;
+        if (k === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+      }
+      ctx.stroke(); ctx.globalAlpha = 1;
+      const X = cx + b.x * sc, Y = cy - b.y * sc;
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(X, Y, 4 + Math.sqrt(b.m) * 3, 0, 7); ctx.fill();
+    }
+  },
+
+  xRange() { return [-1.3, 1.3]; },
+  presets: [
+    { name: "Figure-8 (periodic)", useFig8: true, params: { G: 1, soft: 0.02 } },
+    { name: "Chaos trio", bodies: [
+        { x: 0.8, y: 0.3, vx: 0, vy: 0.45, m: 1 },
+        { x: -0.7, y: 0.1, vx: 0.1, vy: -0.4, m: 1.2 },
+        { x: 0, y: -0.5, vx: -0.4, vy: 0.1, m: 0.9 }] },
+    { name: "Binary + comet", bodies: [
+        { x: -0.5, y: 0, vx: 0, vy: -0.87, m: 1.5 },
+        { x: 0.5, y: 0, vx: 0, vy: 0.87, m: 1.5 },
+        { x: 1.4, y: 0.2, vx: -0.2, vy: 1.0, m: 0.05 }] },
+    { name: "Sun + 2 planets", bodies: [
+        { x: 0, y: 0, vx: 0, vy: 0, m: 8 },
+        { x: 0.7, y: 0, vx: 0, vy: 3.38, m: 0.1 },
+        { x: -1.1, y: 0.2, vx: 0, vy: -2.7, m: 0.08 }] },
+  ],
+};
+
+// ==========================================================================
+//  WAVE INTERFERENCE
+// ==========================================================================
+const waves = {
+  id: "waves", label: "Wave Interference",
+  hint: "Two coherent sources on a 2D field; bright bands = constructive interference. Make them anti-phase and the center line goes dark. Histogram: fringe intensity at the right screen.",
+  histLabel: "Fringe intensity at right screen",
+  eqName: "wave(x, y, t, sources, params)",
+  eqSig: "x, y: field point · t: time · sources = [{x, y, freq, amp, phase}] · returns: amplitude",
+  eqDesc: "Each source emits A·sin(2π(f·t − r/λ) + φ) with 1/√r spreading; amplitudes sum. Try removing the decay or adding a third source.",
+  eqSpec: { argNames: ["x", "y", "t", "sources", "params"], mustReturn: true },
+  params: [
+    { key: "freq",   label: "Frequency",         min: 0.5, max: 6,   step: 0.1,  value: 2.2 },
+    { key: "lambda", label: "Wavelength λ",      min: 12,  max: 120, step: 2,    value: 40 },
+    { key: "sep",    label: "Source separation", min: 0,   max: 300, step: 5,    value: 130 },
+    { key: "phase2", label: "Source-2 phase",    min: 0,   max: 6.3, step: 0.1,  value: 0 },
+  ],
+  defaultCode:
+`// Sum of circular waves: A·sin(2π(f·t − r/λ) + φ) with 1/√r spreading
+let sum = 0;
+for (const s of sources) {
+  const dx = x - s.x, dy = y - s.y;
+  const r = Math.hypot(dx, dy) + 1e-6;
+  sum += s.amp * Math.sin(2 * Math.PI * (s.freq * t - r / params.lambda) + s.phase)
+         / Math.sqrt(r / 20);
+}
+return sum;
+
+// try me — no geometric decay (plane waves):
+// sum += s.amp * Math.sin(2 * Math.PI * (s.freq * t - r / params.lambda) + s.phase);`,
+  P: {}, tSim: 0, off: null, octx: null, img: null, bufW: 0, bufH: 0,
+  init() { this.tSim = 0; this.off = document.createElement("canvas"); this.octx = null; },
+  layout() { this.init(); },
+  onParam() {},
+  onPreset() {},
+  drop(n) { setStatus("waves running"); },
+  sources() {
+    const s = this.P.sep / 2;
+    return [
+      { x: W / 2 - s, y: H / 2, freq: this.P.freq, amp: 1, phase: 0 },
+      { x: W / 2 + s, y: H / 2, freq: this.P.freq, amp: 1, phase: this.P.phase2 },
+    ];
+  },
+
+  step(dt) {
+    this.tSim += dt;
+    if (frameCount % 2 === 0) {
+      const y = rng() * H;
+      let a = 0;
+      try { a = Math.abs(this.eq(W - 60, y, this.tSim, this.sources(), this.P)); } catch (e) {}
+      if (rng() < a * a) pushSample(y);   // sample screen intensity → fringes
+    }
+  },
+
+  renderField() {
+    const scale = 4;
+    const bw = Math.ceil(W / scale), bh = Math.ceil(H / scale);
+    if (bw !== this.bufW || bh !== this.bufH || !this.octx) {
+      this.bufW = bw; this.bufH = bh;
+      this.off.width = bw; this.off.height = bh;
+      this.octx = this.off.getContext("2d");
+      this.img = this.octx.createImageData(bw, bh);
+    }
+    const src = this.sources(), d = this.img.data;
+    let k = 0;
+    for (let py = 0; py < bh; py++) {
+      const y = py * scale;
+      for (let px = 0; px < bw; px++) {
+        let v = 0;
+        try { v = this.eq(px * scale, y, this.tSim, src, this.P); } catch (e) { eqRuntimeError(e); }
+        if (!isFinite(v)) v = 0;
+        v = clamp(v, -1, 1);
+        if (v > 0) { d[k] = 90 + 165 * v; d[k + 1] = 135 + 110 * v; d[k + 2] = 220; }
+        else { d[k] = 20; d[k + 1] = 60 + 80 * -v; d[k + 2] = 160 + 95 * -v; }
+        d[k + 3] = 255; k += 4;
+      }
+    }
+    this.octx.putImageData(this.img, 0, 0);
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    try { this.renderField(); } catch (e) { eqRuntimeError(e); }
+    if (this.octx) { ctx.imageSmoothingEnabled = true; ctx.drawImage(this.off, 0, 0, W, H); }
+    for (const s of this.sources()) {
+      ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, 7); ctx.fill();
+    }
+  },
+
+  xRange() { return [0, H]; },
+  presets: [
+    { name: "In-phase (bright center)", params: { phase2: 0, sep: 130 } },
+    { name: "Anti-phase (dark center)", params: { phase2: Math.PI, sep: 130 } },
+    { name: "Wide fringes", params: { lambda: 90, sep: 60 } },
+    { name: "Tight fringes", params: { lambda: 20, sep: 200 } },
+  ],
+};
+
+// ==========================================================================
+//  LOGISTIC MAP (bifurcation)
+// ==========================================================================
+const logistic = {
+  id: "logistic", label: "Logistic Map",
+  hint: "xₙ₊₁ = r·xₙ(1−xₙ): point → period-2 → period-4 → chaos as r grows. Background = live bifurcation diagram; green dots = your current orbit at the red line.",
+  histLabel: "Orbit values xₙ (invariant density)",
+  eqName: "map(x, params)",
+  eqSig: "x: current value in [0, 1] · params.r: growth rate · returns: next x",
+  eqDesc: "The most-studied equation in chaos theory. Edit the map (try r·x·(1−x)^1.5) and the whole bifurcation diagram re-renders.",
+  eqSpec: { argNames: ["x", "params"], mustReturn: true },
+  params: [
+    { key: "r",    label: "Growth rate r",  min: 2.4, max: 4,   step: 0.001, value: 3.7 },
+    { key: "burn", label: "Burn-in iters",  min: 0,   max: 1000, step: 25,   value: 200 },
+  ],
+  defaultCode:
+`// The logistic map — the most-studied equation in chaos theory
+return params.r * x * (1 - x);
+
+// try me — deformed map shifts the bifurcation structure:
+// return params.r * x * (1 - x) ** 1.5;
+
+// try me — cubic map (different period windows):
+// return params.r * x * (1 - x*x);`,
+  P: {}, x: 0.412, burnLeft: 200, diagramDirty: true, diag: null, orbit: [],
+  init() { this.x = 0.412; this.burnLeft = this.P.burn; this.orbit = []; },
+  layout() { this.diagramDirty = true; },
+  onParam() { this.init(); },
+  onEquation() { this.diagramDirty = true; this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("orbit restarted"); },
+
+  buildDiagram() {
+    if (!this.diag) this.diag = document.createElement("canvas");
+    this.diag.width = Math.max(200, Math.floor(W)); this.diag.height = Math.max(120, Math.floor(H));
+    const c = this.diag.getContext("2d");
+    c.fillStyle = "#090c10"; c.fillRect(0, 0, this.diag.width, this.diag.height);
+    c.fillStyle = "rgba(88,166,255,.5)";
+    const cols = this.diag.width;
+    for (let i = 0; i < cols; i += 2) {
+      const r = 2.4 + 1.6 * i / cols;
+      let x = 0.4, dead = false;
+      for (let k = 0; k < 300; k++) {
+        try { x = this.eq(x, { r }); } catch (e) { dead = true; break; }
+        if (!isFinite(x)) { dead = true; break; }
+      }
+      if (dead) continue;
+      for (let k = 0; k < 120; k++) {
+        try { x = this.eq(x, { r }); } catch (e) { break; }
+        if (!isFinite(x) || x < 0 || x > 1) break;
+        c.fillRect(i, this.diag.height - x * this.diag.height, 1, 1);
+      }
+    }
+    this.diagramDirty = false;
+  },
+
+  step(dt) {
+    try {
+      for (let k = 0; k < 150; k++) {
+        this.x = this.eq(this.x, this.P);
+        if (!isFinite(this.x) || this.x < -0.01 || this.x > 1.01) { this.x = 0.412; this.burnLeft = this.P.burn; continue; }
+        if (this.burnLeft > 0) this.burnLeft--;
+        else {
+          pushSample(this.x);
+          this.orbit.push(this.x);
+          if (this.orbit.length > 150) this.orbit.shift();
+        }
+      }
+    } catch (e) { eqRuntimeError(e); }
+  },
+
+  draw() {
+    if (this.diagramDirty) this.buildDiagram();
+    ctx.clearRect(0, 0, W, H);
+    if (this.diag) ctx.drawImage(this.diag, 0, 0, W, H);
+    const rx = (this.P.r - 2.4) / 1.6 * W;
+    ctx.strokeStyle = "rgba(248,81,73,.8)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(rx, 0); ctx.lineTo(rx, H); ctx.stroke();
+    ctx.fillStyle = "#3fb950";
+    for (const xv of this.orbit) { ctx.beginPath(); ctx.arc(rx, H - xv * H, 2.2, 0, 7); ctx.fill(); }
+  },
+
+  xRange() { return [0, 1]; },
+  presets: [
+    { name: "Period-2 (r=3.2)", params: { r: 3.2 } },
+    { name: "Period-3 window (r=3.83)", params: { r: 3.83 } },
+    { name: "Edge of chaos (r=3.57)", params: { r: 3.57 } },
+    { name: "Full chaos (r=4)", params: { r: 4 } },
+  ],
+};
+
+// ==========================================================================
+//  BOIDS FLOCKING (Reynolds 1987)
+// ==========================================================================
+const boids = {
+  id: "boids", label: "Boids Flocking",
+  hint: "Emergent flocking from three local steering rules — no leader. Zero out alignment and the flock shatters; max cohesion and it becomes a swarm ball.",
+  eqName: "steer(boid, flock, params)",
+  eqSig: "boid = {x, y, vx, vy} · flock = neighbors in vision radius · returns: {x, y} acceleration",
+  eqDesc: "Classic Reynolds rules: separation + alignment + cohesion. Edit the mix live, add a predator, or write your own steering law.",
+  eqSpec: { argNames: ["boid", "flock", "params"], mustReturn: true },
+  defaultCode:
+`// Reynolds' three rules — each computes a desired velocity,
+// then steers toward it (steer = desired − current).
+// flock = neighbors within params.radius
+const k = flock.length || 1;
+let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0;
+for (const q of flock) {
+  const dx = boid.x - q.x, dy = boid.y - q.y;
+  const d2 = dx*dx + dy*dy + 1e-6;
+  sepX += dx / d2; sepY += dy / d2;   // separation: inverse-square push away
+  aliX += q.vx;    aliY += q.vy;      // alignment: match neighbor heading
+  cohX += q.x;     cohY += q.y;       // cohesion: pull toward local center
+}
+const maxS = params.maxSpeed;
+const steer = (dx, dy) => {           // desired velocity → steering force
+  const m = Math.hypot(dx, dy);
+  return m < 1e-6 ? [0, 0] : [dx / m * maxS - boid.vx, dy / m * maxS - boid.vy];
+};
+const [sx, sy] = steer(sepX, sepY);
+const [ax, ay] = steer(aliX / k, aliY / k);
+const [cx2, cy2] = steer(cohX / k - boid.x, cohY / k - boid.y);
+return {
+  x: params.sep * sx + params.ali * ax + params.coh * cx2,
+  y: params.sep * sy + params.ali * ay + params.coh * cy2,
+};
+
+// try me — predator avoidance (flee from the top-left):
+// const fx = boid.x - 120, fy = boid.y - 80;
+// const flee = 90000 / (fx*fx + fy*fy + 3000);
+// return { x: flee*fx, y: flee*fy };`,
+  params: [
+    { key: "n",        label: "Boid count",    min: 20,  max: 400, step: 10,  value: 150 },
+    { key: "sep",      label: "Separation",    min: 0,   max: 3,   step: 0.1, value: 1.4 },
+    { key: "ali",      label: "Alignment",     min: 0,   max: 3,   step: 0.1, value: 1 },
+    { key: "coh",      label: "Cohesion",      min: 0,   max: 3,   step: 0.1, value: 0.8 },
+    { key: "maxSpeed", label: "Max speed",     min: 40,  max: 400, step: 10,  value: 160 },
+    { key: "radius",   label: "Vision radius", min: 20,  max: 150, step: 5,   value: 60 },
+  ],
+  P: {}, neighbors: [],
+  histLabel: "Neighbors per boid (flock density)",
+
+  init() {
+    particles = [];
+    for (let i = 0; i < this.P.n; i++) {
+      particles.push({
+        x: rng() * W, y: rng() * H,
+        vx: (rng() - 0.5) * 240, vy: (rng() - 0.5) * 240,
+        alive: true, r: 2.5, data: {}
+      });
+    }
+    this.neighbors = [];
+  },
+  layout() {},
+  onParam(key) {
+    if (key === "n") {
+      while (particles.length < this.P.n) particles.push({ x: rng() * W, y: rng() * H, vx: 0, vy: 0, alive: true, r: 2.5, data: {} });
+      if (particles.length > this.P.n) particles.length = this.P.n;
+    }
+    this.neighbors = []; // force neighbor rebuild (radius changed)
+  },
+  onPreset() { this.neighbors = []; },
+  drop(n) {
+    for (let i = 0; i < n && particles.length < 600; i++) {
+      particles.push({ x: rng() * W, y: rng() * H, vx: (rng() - 0.5) * 240, vy: (rng() - 0.5) * 240, alive: true, r: 2.5, data: {} });
+    }
+    this.P.n = particles.length;
+    buildParams();
+    setStatus(particles.length + " boids");
+  },
+
+  step(dt) {
+    // neighbor lists are O(n²) — rebuild every 4th physics tick
+    if (frameCount % 4 === 0 || this.neighbors.length !== particles.length) {
+      const R2 = this.P.radius * this.P.radius;
+      this.neighbors = particles.map(p => {
+        const list = [];
+        for (const q of particles) {
+          if (q === p) continue;
+          const dx = q.x - p.x, dy = q.y - p.y;
+          if (dx * dx + dy * dy < R2) list.push(q);
+        }
+        return list;
+      });
+    }
+    const mx = this.P.maxSpeed, mn = mx * 0.45;
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      try {
+        const a = this.eq(p, this.neighbors[i], this.P);
+        if (a && isFinite(a.x) && isFinite(a.y)) { p.vx += a.x * dt; p.vy += a.y * dt; }
+      } catch (e) { eqRuntimeError(e); }
+      const sp = Math.hypot(p.vx, p.vy);
+      if (sp > mx) { p.vx *= mx / sp; p.vy *= mx / sp; }
+      else if (sp > 0 && sp < mn) { p.vx *= mn / sp; p.vy *= mn / sp; }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.x < 0) p.x += W; else if (p.x > W) p.x -= W;   // wrap-around world
+      if (p.y < 0) p.y += H; else if (p.y > H) p.y -= H;
+    }
+    if (frameCount % 6 === 0 && this.neighbors.length) {
+      pushSample(this.neighbors[Math.floor(rng() * this.neighbors.length)]?.length || 0);
+    }
+  },
+
+  draw() {
+    if ($("trails").checked) { ctx.fillStyle = "rgba(9,12,16,.30)"; ctx.fillRect(0, 0, W, H); }
+    else ctx.clearRect(0, 0, W, H);
+    for (const p of particles) {
+      const ang = Math.atan2(p.vy, p.vx);
+      ctx.save();
+      ctx.translate(p.x, p.y); ctx.rotate(ang);
+      ctx.fillStyle = $("colorBySpeed").checked ? speedColor(Math.hypot(p.vx, p.vy), this.P.maxSpeed) : "#58a6ff";
+      ctx.beginPath(); ctx.moveTo(7, 0); ctx.lineTo(-5, 4); ctx.lineTo(-5, -4); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  },
+
+  xRange() { return [0, 60]; },
+  presets: [
+    { name: "Classic flock", params: { sep: 1.4, ali: 1, coh: 0.8, radius: 60 } },
+    { name: "No alignment (shattered)", params: { ali: 0 } },
+    { name: "Tight swarm ball", params: { coh: 2.5, sep: 0.4, ali: 1.5 } },
+    { name: "Gas (separation only)", params: { sep: 2.5, ali: 0, coh: 0 } },
+  ],
+};
+
+const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids];
+let modeIndex = 0;
+let frameCount = 0;
+
+function setStatus(msg) { $("statustext").textContent = msg; }
+
+let errCount = 0, lastErrTime = 0;
+function eqRuntimeError(e) {
+  errCount++;
+  const now = performance.now();
+  if (now - lastErrTime > 400) {
+    lastErrTime = now;
+    $("eqerr").style.display = "block";
+    $("eqerr").textContent = `runtime error (×${errCount}): ${e.message}`;
+    $("eqok").style.display = "none";
+  }
+}
+
+function buildTabs() {
+  const wrap = $("tabs"); wrap.innerHTML = "";
+  MODES.forEach((m, i) => {
+    const b = document.createElement("button");
+    b.className = "tab" + (i === modeIndex ? " active" : "");
+    b.textContent = m.label;
+    b.onclick = () => switchMode(i);
+    wrap.appendChild(b);
+  });
+}
+
+function buildParams() {
+  const wrap = $("params"); wrap.innerHTML = "";
+  for (const pd of mode.params) {
+    const row = document.createElement("div"); row.className = "param";
+    const lab = document.createElement("label"); lab.textContent = pd.label;
+    const inp = document.createElement("input");
+    inp.type = "range"; inp.min = pd.min; inp.max = pd.max; inp.step = pd.step; inp.value = mode.P[pd.key];
+    const val = document.createElement("span"); val.className = "val"; val.textContent = fmtVal(mode.P[pd.key]);
+    inp.oninput = () => {
+      mode.P[pd.key] = parseFloat(inp.value);
+      val.textContent = fmtVal(mode.P[pd.key]);
+      saveParam(mode.id, pd.key, mode.P[pd.key]);
+      if (mode.onParam) mode.onParam(pd.key);
+    };
+    row.append(lab, inp, val); wrap.appendChild(row);
+  }
+}
+function fmtVal(v) { return Math.abs(v) >= 100 ? Math.round(v).toString() : (+v).toFixed(2).replace(/\.?0+$/, ""); }
+
+function buildPresets() {
+  const wrap = $("presets"); wrap.innerHTML = "";
+  if (!mode.presets) { $("presetSection").style.display = "none"; return; }
+  $("presetSection").style.display = "block";
+  mode.presets.forEach(p => {
+    const b = document.createElement("button"); b.className = "preset";
+    b.textContent = p.name;
+    b.onclick = () => {
+      if (p.code) { $("eqeditor").value = p.code; applyEquation(); }
+      if (p.params) { Object.assign(mode.P, p.params); buildParams(); }
+      if (p.state && mode.applyState) mode.applyState(p.state);
+      if (mode.onPreset) mode.onPreset(p);
+      markPreset(p.name);
+    };
+    if (p.name === mode.defaultPresetName) b.classList.add("active");
+    wrap.appendChild(b);
+  });
+  markPreset(null);
+}
+function markPreset(name) {
+  document.querySelectorAll(".preset").forEach(b => b.classList.toggle("active", b.textContent === name));
+}
+
+function applyEquation() {
+  const code = $("eqeditor").value;
+  const spec = mode.eqSpec;      // {argNames, mustReturn}
+  const res = compileEq(code, spec.argNames, spec.mustReturn);
+  if (res.err) {
+    $("eqerr").style.display = "block"; $("eqerr").textContent = res.err;
+    $("eqok").style.display = "none";
+    return false;
+  }
+  mode.eq = res.fn;
+  if (mode.onEquation) mode.onEquation();
+  saveEq(mode.id);
+  $("eqerr").style.display = "none";
+  $("eqok").style.display = "block";
+  setTimeout(() => { $("eqok").style.display = "none"; }, 1200);
+  return true;
+}
+
+function clearParticles() { particles = []; clearLanding(); }
+
+function switchMode(i) {
+  modeIndex = i;
+  mode = MODES[i];
+  clearParticles();
+  // init params from defaults, then restore any saved slider values
+  mode.P = {};
+  for (const pd of mode.params) mode.P[pd.key] = pd.value;
+  const savedP = store().p && store().p[mode.id];
+  if (savedP) for (const k in savedP) if (k in mode.P && isFinite(savedP[k])) mode.P[k] = savedP[k];
+  mode.init();
+  buildTabs();
+  $("eqname").textContent = mode.eqName;
+  $("eqsig").textContent = mode.eqSig;
+  $("eqdesc").textContent = mode.eqDesc;
+  const savedEq = store().eq && store().eq[mode.id];
+  $("eqeditor").value = savedEq != null ? savedEq : mode.defaultCode;
+  buildParams();
+  buildPresets();
+  applyEquation();
+  $("hint").textContent = mode.hint;
+  $("histoLabel").textContent = mode.histLabel || "Distribution of final X";
+  setStatus(mode.label + " — ready");
+  resize();
+}
+
+// ---------- histogram ------------------------------------------------------
+function drawHistogram() {
+  if (!hist.dirty && !hist._force) return;
+  hist._force = true; // redraw cheap enough; keep simple
+  hctx.clearRect(0, 0, HW, HH);
+  const pad = { l: 8, r: 8, t: 8, b: 16 };
+  const iw = HW - pad.l - pad.r, ih = HH - pad.t - pad.b;
+
+  const nBins = parseInt($("bins").value, 10);
+  const [x0, x1] = (mode && mode.xRange) ? mode.xRange() : [0, W];
+  const bins = new Array(nBins).fill(0);
+  let n = 0;
+  for (const x of hist.xs) {
+    if (x < x0 || x > x1) continue;
+    let b = Math.floor((x - x0) / (x1 - x0) * nBins);
+    b = clamp(b, 0, nBins - 1);
+    bins[b]++; n++;
+  }
+  const maxC = Math.max(1, ...bins);
+
+  // bars
+  const bw = iw / nBins;
+  for (let i = 0; i < nBins; i++) {
+    const h = bins[i] / maxC * ih;
+    hctx.fillStyle = "rgba(88,166,255,.75)";
+    hctx.fillRect(pad.l + i * bw + 1, pad.t + ih - h, Math.max(1, bw - 2), h);
+  }
+
+  // theoretical overlay: normal fit from sample mean/σ
+  if (n > 10 && $("showTheory").checked) {
+    let mean = 0; for (const x of hist.xs) mean += x; mean /= n;
+    let varr = 0; for (const x of hist.xs) varr += (x - mean) * (x - mean); varr /= n;
+    const sd = Math.sqrt(varr) || 1;
+    hctx.strokeStyle = "#3fb950"; hctx.lineWidth = 2; hctx.beginPath();
+    for (let px = 0; px <= iw; px += 2) {
+      const x = x0 + px / iw * (x1 - x0);
+      const z = (x - mean) / sd;
+      const pdf = Math.exp(-0.5 * z * z) / (sd * Math.sqrt(2 * Math.PI));
+      // scale so peak matches maxC
+      const yv = pdf * n * ((x1 - x0) / nBins) / maxC * ih; // expected count in peak bin
+      const py = pad.t + ih - clamp(yv, 0, ih);
+      if (px === 0) hctx.moveTo(pad.l + px, py); else hctx.lineTo(pad.l + px, py);
+    }
+    hctx.stroke();
+    // mean marker
+    const mx = pad.l + (mean - x0) / (x1 - x0) * iw;
+    hctx.strokeStyle = "rgba(63,185,80,.5)"; hctx.setLineDash([4, 4]);
+    hctx.beginPath(); hctx.moveTo(mx, pad.t); hctx.lineTo(mx, pad.t + ih); hctx.stroke();
+    hctx.setLineDash([]);
+  }
+
+  // stats
+  let mean = 0, sd = 0, skew = 0, kurt = 0;
+  if (n > 0) {
+    for (const x of hist.xs) mean += x; mean /= n;
+    for (const x of hist.xs) sd += (x - mean) * (x - mean); sd = Math.sqrt(sd / n) || 1;
+    for (const x of hist.xs) { const z = (x - mean) / sd; skew += z ** 3; kurt += z ** 4; }
+    skew /= n; kurt /= n;
+  }
+  $("histostats").textContent = `n=${n}  μ=${mean.toFixed(1)}  σ=${sd.toFixed(1)}`;
+  // shape stats drawn on the plot itself
+  hctx.font = "10px ui-monospace, monospace";
+  hctx.fillStyle = "rgba(230,237,243,.55)";
+  const norm = Math.abs(skew) < 0.3 && kurt > 2.4 && kurt < 3.6;
+  hctx.fillText(`skew ${skew.toFixed(2)}  kurtosis ${kurt.toFixed(2)}  ${norm ? "≈normal ✓" : ""}`, pad.l + 4, pad.t + 10);
+  hist.dirty = false;
+}
+
+// ---------- export: CSV + PNG ----------------------------------------------
+function download(name, blob) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+$("btnCsv").onclick = () => {
+  const nBins = parseInt($("bins").value, 10);
+  const [x0, x1] = mode.xRange ? mode.xRange() : [0, W];
+  const bins = new Array(nBins).fill(0);
+  for (const x of hist.xs) {
+    if (x < x0 || x > x1) continue;
+    bins[clamp(Math.floor((x - x0) / (x1 - x0) * nBins), 0, nBins - 1)]++;
+  }
+  const bw = (x1 - x0) / nBins;
+  let csv = `# ${mode.label} — ${mode.histLabel || "distribution"}\nbin_start,bin_end,count\n`;
+  bins.forEach((c, i) => { csv += `${(x0 + i * bw).toFixed(4)},${(x0 + (i + 1) * bw).toFixed(4)},${c}\n`; });
+  download(`histogram-${mode.id}.csv`, new Blob([csv], { type: "text/csv" }));
+  setStatus("CSV exported");
+};
+$("btnPng").onclick = () => {
+  // composite sim canvas + histogram into one snapshot
+  const out = document.createElement("canvas");
+  out.width = canvas.width; out.height = canvas.height + hcanvas.height;
+  const c = out.getContext("2d");
+  c.drawImage(canvas, 0, 0);
+  c.drawImage(hcanvas, 0, canvas.height);
+  out.toBlob(b => { download(`snapshot-${mode.id}.png`, b); setStatus("PNG saved"); });
+};
+
+// ---------- persistence: your equations & slider values survive reloads -----
+function store() { try { return JSON.parse(localStorage.getItem("simlab") || "{}") || {}; } catch (e) { return {}; } }
+function saveStore(mut) {
+  try { const s = store(); mut(s); localStorage.setItem("simlab", JSON.stringify(s)); } catch (e) {}
+}
+const saveEq = modeId => saveStore(s => { (s.eq = s.eq || {})[modeId] = $("eqeditor").value; });
+const saveParam = (modeId, key, val) => saveStore(s => { ((s.p = s.p || {})[modeId] = s.p[modeId] || {})[key] = val; });
+
+// ---------- buttons / keys -------------------------------------------------
+$("btnDrop").onclick = () => { mode.drop(mode.id === "force" ? mode.P.n : 100); };
+$("btnPause").onclick = togglePause;
+$("btnClear").onclick = () => { clearParticles(); setStatus("cleared"); };
+$("speed").oninput = e => { speedMul = parseFloat(e.target.value); $("speedval").textContent = speedMul + "×"; };
+$("eqeditor").addEventListener("input", debounce(applyEquation, 300));
+$("eqeditor").addEventListener("keydown", e => {
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const t = e.target, s = t.selectionStart;
+    t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd);
+    t.selectionStart = t.selectionEnd = s + 2;
+  }
+});  $("eqreset").onclick = () => {
+    $("eqeditor").value = mode.defaultCode;
+    applyEquation(); markPreset(null);
+    saveStore(s => { if (s.eq) delete s.eq[mode.id]; if (s.p) delete s.p[mode.id]; });
+    mode.P = {}; for (const pd of mode.params) mode.P[pd.key] = pd.value;
+    mode.init(); buildParams();
+  };
+$("bins").oninput = () => { hist.dirty = true; };
+["trails", "showTheory", "colorBySpeed"].forEach(id => $(id).onchange = () => { hist.dirty = true; });
+
+function togglePause() {
+  paused = !paused;
+  $("btnPause").textContent = paused ? "▶ Resume" : "⏸ Pause";
+  $("statusdot").style.background = paused ? "var(--orange)" : "var(--green)";
+  setStatus(paused ? "paused" : "running");
+}
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); $("btnDrop").click(); }
+  else if (e.key === "p" || e.key === "P") togglePause();
+  else if (e.key === "c" || e.key === "C") clearParticles();
+  else if (e.key >= "1" && e.key <= "9") { const i = parseInt(e.key) - 1; if (i < MODES.length) switchMode(i); }
+});
+
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+// ---------- go -------------------------------------------------------------
+resize();
+switchMode(0);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

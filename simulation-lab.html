@@ -5008,7 +5008,146 @@ return params.a || 0;
   ],
 };
 
-const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship];
+const cockpit = {
+  id: "cockpit", label: "Warp Cockpit (first-person)",
+  category: "Relativity",
+  hint: "You ride inside the rocket looking forward through a long-distance lens. The moment you begin accelerating, the whole visible universe appears to rush toward you through the beam. What you see is Einstein's aberration + Doppler: light from straight ahead is blueshifted by D=γ(1+β), broadside starlight compresses toward the front and shifts by γ, and the sky receding behind turns deep red. As β→c, the sky funnels into a tiny blinding blue disk ahead.",
+  histLabel: "ship speed β = v/c",
+  eqName: "rate(t, params)",
+  eqSig: "t: mission time (s) · returns: rapidity gain per second (w units)",
+  eqDesc: "Rapidity w drives velocity by β = tanh(w), so c is a hard asymptote — no matter how long you keep your foot down, the needle only approaches 1. The editable law fixes how fast rapidity grows (default 0.3/s → β≈0.99999 after 20 s). Relativistic aberration maps each star's direction, the Doppler factor D = γ(1+β·cosθ) recolours it (blue ahead, dim red behind), and aberration density does the rest.",
+  eqSpec: { argNames: ["t", "params"], mustReturn: true },
+  params: [
+    { key: "a", label: "Rapidity gain w/s", min: 0.05, max: 1, step: 0.05, value: 0.3 },
+    { key: "n", label: "Stars", min: 200, max: 4000, step: 100, value: 1600 },
+  ],
+  defaultCode:
+`// Rapidity gain per second. β = tanh(w) → c is a hard asymptote.
+return params.a || 0;
+// 0→~c in 20 s is default (a=0.3): w(20)=6 → β=tanh6≈0.99999.
+// try a burn-and-coast profile:
+// return t < 12 ? (params.a || 0) : 0;`,
+  P: {}, w: 0, t: 0, beta: 0, gamma: 1, vlog: [], stars: [],
+  init() {
+    this.w = 0; this.t = 0; this.beta = 0; this.gamma = 1;
+    this.vlog.length = 0;
+    let n = 1600;
+    if (this.P.n) n = Math.max(60, Math.floor(this.P.n));
+    if (this.stars.length !== n) {
+      this.stars.length = 0;
+      for (let i = 0; i < n; i++) {
+        const z = 2 * rng() - 1, a = rng() * 2 * Math.PI, r = Math.sqrt(Math.max(0, 1 - z * z));
+        const t = 3400 + 26000 * rng() * rng() * rng();
+        this.stars.push({ x: r * Math.cos(a), y: r * Math.sin(a), z, T: t, m: 0.25 + 0.75 * rng() });
+      }
+    }
+  },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("re-fired from rest"); },
+  measures() { return [["β", this.beta.toFixed(4)], ["γ", this.gamma.toFixed(1)], ["D ahead", (this.gamma * (1 + this.beta)).toFixed(0)], ["t", this.t.toFixed(1) + " s"]]; },
+  series() { return [["β", this.vlog]]; },
+  step(dt) {
+    let rate = 0;
+    try { rate = this.eq(this.t, this.P); } catch (e) { rate = 0; eqRuntimeError(e); }
+    rate = Math.max(0, isFinite(rate) ? rate : 0);
+    this.w += rate * dt;
+    if (this.w > 14) this.w = 14;
+    this.beta = Math.tanh(this.w);
+    this.gamma = Math.cosh(this.w);
+    this.t += dt;
+    this.vlog.push(this.beta); if (this.vlog.length > 1200) this.vlog.splice(0, this.vlog.length - 1200);
+    pushSample(this.beta);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const β = this.beta, γ = this.gamma, cx = W / 2, cy = H / 2;
+    const Rm = Math.min(W, H) * 0.40;
+    ctx.fillStyle = "#04060e"; ctx.fillRect(0, 0, W, H);
+
+    // inspect frame lens ring
+    ctx.strokeStyle = "rgba(88,166,255,.35)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, Rm, 0, 7); ctx.stroke();
+    ctx.strokeStyle = "rgba(88,166,255,.12)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, Rm * 0.5, 0, 7); ctx.stroke();
+
+    for (const s of this.stars) {
+      const den = 1 + β * s.z;             // 1+β cosθ_u, universe-frame angle
+      if (den < 1e-6) continue;
+      // relativistic aberration: universe-frame direction → ship-frame direction
+      const zz = (s.z + β) / den;
+      const sr = 1 / (γ * den);            // transverse component shrink
+      const xr = s.x * sr, yr = s.y * sr;
+      // Doppler factor (observed/emitted frequency)
+      const D = γ * (1 + β * s.z);
+      const Tobs = s.T * D;
+      // blackbody temperature → rgb (simple piecewise)
+      let r, g, b;
+      if (Tobs > 6500) {
+        const t = Tobs / 100;
+        r = clamp(329.7 * Math.pow(t - 0.6, -0.133), 40, 255);
+        g = clamp(288.1 * Math.pow(t - 0.6, -0.0755), 40, 255);
+        b = 255;
+      } else {
+        r = 255;
+        g = clamp(99.47 * Math.log(Math.max(1, Tobs)) - 161.12, 0, 255);
+        if (Tobs < 2000) b = 0; else b = clamp(138.5 * Math.log(Math.max(1, Tobs - 10)) - 305.04, 0, 255);
+      }
+      const bright = Math.min(1.4, s.m * Math.pow(D, 1.6)) * 0.6;
+      const famount = clamp((1 + β * s.z) * 0.9, 0, 1.6);
+      const ang = Math.atan2(yr, xr);
+      const tt = Math.acos(clamp(zz, -1, 1));          // apparent polar angle
+      const rdst = Rm * tt / Math.PI;
+      const px = cx + rdst * Math.cos(ang), py = cy + rdst * Math.sin(ang);
+      const al = Math.min(1, bright * famount);
+      if (al < 0.02) continue;
+      ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${al.toFixed(3)})`;
+      const size = 1.1 + 2.2 * Math.pow(al, 1.4);
+      ctx.beginPath(); ctx.arc(px, py, Math.min(9, size), 0, 7); ctx.fill();
+    }
+
+    // beam glow ahead (bright blue disk toward which the sky funnels)
+    const glow = Math.min(1, β * 2.2);
+    if (glow > 0.02) {
+      const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, Rm * 0.6);
+      grd.addColorStop(0, `rgba(120,180,255,${(0.28 * glow).toFixed(3)})`);
+      grd.addColorStop(1, "rgba(120,180,255,0)");
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.arc(cx, cy, Rm * 0.6, 0, 7); ctx.fill();
+    }
+
+    // colour map legend
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px Consolas,monospace";
+    ctx.fillText("broadside → γ·blue", cx + Rm * 0.20, cy - Rm - 8);
+    ctx.fillText("ahead → D=γ(1+β) blue", cx - Rm - 120, cy - 8);
+    ctx.fillText("behind → deep red", cx - Rm - 120, cy + 20);
+
+    // readouts
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`t=${this.t.toFixed(1)}s   β=${this.beta.toFixed(4)}  γ=${this.gamma.toFixed(1)}  w=${this.w.toFixed(2)}`, 12, 22);
+    // velocity gauge
+    const gx0 = 12, gx1 = W - 12, gy = H - 14;
+    ctx.strokeStyle = "rgba(160,200,255,.35)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(gx0, gy); ctx.lineTo(gx1, gy); ctx.stroke();
+    const needle = gx0 + (gx1 - gx0) * Math.min(0.99999, this.beta);
+    ctx.fillStyle = "#f85149";
+    ctx.fillRect(needle - 1, gy - 5, 2, 10);
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px Consolas,monospace";
+    ctx.fillText("0", gx0, gy + 12);
+    ctx.fillText("c", gx1, gy + 12);
+    ctx.fillText("β=" + this.beta.toFixed(4), needle - 30, gy - 8);
+  },
+  xRange() { return [0, 1]; },
+  presets: [
+    { name: "≈ c in 20 s", params: { a: 0.3, n: 1600 }, code: "return params.a || 0;" },
+    { name: "sprint (5 s)", params: { a: 1, n: 1600 } },
+    { name: "gentle (60 s)", params: { a: 0.1, n: 1600 } },
+  ],
+};
+
+const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit];
 let modeIndex = 0;
 let frameCount = 0;
 

@@ -359,6 +359,49 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
+// ---------- fractal pointer interaction (Mandelbrot / Julia) ---------------
+(function () {
+  let dragging = false, lastX = 0, lastY = 0, moved = 0;
+  canvas.addEventListener("pointerdown", e => {
+    if (!mode || mode.id !== "mandelbrot") return;
+    dragging = true; moved = 0; lastX = e.offsetX; lastY = e.offsetY;
+    if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
+    mode._px = e.offsetX; mode._py = e.offsetY;
+  });
+  canvas.addEventListener("pointermove", e => {
+    if (!mode || mode.id !== "mandelbrot") return;
+    mode._px = e.offsetX; mode._py = e.offsetY;
+    if (dragging) {
+      moved++;
+      const dx = e.offsetX - lastX, dy = e.offsetY - lastY;
+      lastX = e.offsetX; lastY = e.offsetY;
+      mode.panBy(dx, dy);
+    }
+  });
+  const up = e => {
+    if (!mode || mode.id !== "mandelbrot") return;
+    if (dragging && moved < 4 && mode.P.m === 0 && mode._off) {
+      const iw = mode.zoom * 3.4, ih = iw * mode._off.height / mode._off.width;
+      const x0 = mode.viewX - iw / 2, y0 = mode.viewY - ih / 2;
+      mode.P.cr = x0 + (e.offsetX / W) * iw;
+      mode.P.ci = y0 + (e.offsetY / H) * ih;
+      mode.P.m = 1;
+      mode.viewX = mode.P.cr; mode.viewY = mode.P.ci;
+      mode._dirty = 1;
+      buildParams();
+    }
+    dragging = false;
+  };
+  canvas.addEventListener("pointerup", up);
+  canvas.addEventListener("pointercancel", up);
+  canvas.addEventListener("wheel", e => {
+    if (!mode || mode.id !== "mandelbrot") return;
+    e.preventDefault();
+    mode.zoomAt(e.deltaY < 0 ? 1.25 : 0.8);
+  }, { passive: false });
+  canvas.style.touchAction = "none";
+})();
+
 // ---------- particles ------------------------------------------------------
 // Particle: {x,y,vx,vy, alive, data:{...mode-specific}}
 let particles = [];
@@ -5342,7 +5385,667 @@ return 0;
   defaultPresetName: "Metronome sync",
 };
 
-const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit, syncPendula];
+const collatz = {
+  id: "collatz", label: "Collatz (3n+1) Hailstone",
+  category: "Mathematical",
+  hint: "Every number so far checked eventually reaches the 4→2→1 cycle, but nobody has proved it. The faint fan is every trajectory n=1..N; the bold one is your focus number. Halistone paths spike vastly before collapsing, and the mean stopping time creeps up only logarithmically.",
+  histLabel: "stopping time (steps to reach 1) over n=1..N",
+  eqName: "map(n, params)",
+  eqSig: "n: current value · returns: next value of the sequence",
+  eqDesc: "The classic hailstone map is n/2 for even n, 3n+1 for odd. Replace it (e.g. 3n+5, or a Lucas sequence) and every trajectory, focus fan and statistic updates to your variant.",
+  eqSpec: { argNames: ["n", "params"], mustReturn: true },
+  params: [
+    { key: "N", label: "Max start n", min: 16, max: 2000, step: 16, value: 512 },
+    { key: "focus", label: "Focus n", min: 2, max: 2000, step: 1, value: 27 },
+    { key: "perFrame", label: "Steps / frame", min: 1, max: 80, step: 1, value: 12 },
+  ],
+  defaultCode:
+`// Collatz map: n/2 (even) or 3n+1 (odd)
+return n % 2 === 0 ? n / 2 : 3 * n + 1;
+
+// try a cycle of period 6 that breaks the 4-2-1 lock:
+// return n % 2 === 0 ? n / 3 : 5 * n + 1;`,
+  P: {}, stopTimes: [], stopMax: 200, chain: [], chainLen: 0, chainMax: 0, chainLog: [], meanLog: [],
+  anim: 0, _fanStep: [], _fanVals: [],
+  _eqOrElse(n) {
+    if (this.eq) return this.eq(n, this.P);
+    return n % 2 === 0 ? n / 2 : 3 * n + 1;
+  },
+  init() {
+    const N = Math.max(2, Math.round(this.P.N));
+    this.stopTimes.length = 0; this.stopMax = 0;
+    const eq = (a) => this._eqOrElse(a);
+    for (let n = 1; n <= N; n++) {
+      let v = n, s = 0;
+      while (v > 1 && s < 6000 && v < 1e30) { v = eq(v); s++; }
+      this.stopTimes.push(s); if (s > this.stopMax) this.stopMax = s;
+    }
+    this._setFocus();
+    // precompute a down-sampled fan of trajectories (log10 paths)
+    const fanN = Math.min(N, 320), stride = Math.max(1, Math.floor(N / fanN));
+    this._fanStep.length = 0; this._fanVals.length = 0;
+    for (let n = 1; n <= N; n += stride) {
+      let v = n, st = 0;
+      const stp = [], vals = [];
+      stp.push(0); vals.push(Math.log10(Math.max(1, v)));
+      while (v > 1 && st < 6000 && v < 1e30) { v = eq(v); st++; stp.push(st); vals.push(Math.log10(Math.max(1, v))); }
+      this._fanStep.push(stp); this._fanVals.push(vals);
+    }
+    this.meanLog.length = 0;
+  },
+  _setFocus() {
+    const N = Math.max(2, Math.round(this.P.N));
+    const f = Math.min(Math.max(2, Math.round(this.P.focus)), N);
+    this.chain.length = 0; this.chainLog.length = 0; this.chainMax = f;
+    let v = f;
+    while (v > 1 && this.chain.length < 6000 && v < 1e30) {
+      v = this._eqOrElse(v);
+      this.chain.push(v); this.chainLog.push(Math.log10(Math.max(1, v)));
+      if (v > this.chainMax) this.chainMax = v;
+    }
+    this.chainLen = this.chain.length;
+    this.anim = 0;
+  },
+  layout() {},
+  onParam(key) {
+    if (key === "N") this.init();
+    else if (key === "focus") this._setFocus();
+  },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop() { this.init(); setStatus("chain re-run"); },
+  measures() {
+    return [["n", this.P.focus], ["stop time", this.chainLen], ["max value", "10^" + Math.log10(Math.max(1, this.chainMax)).toFixed(1)],
+            ["mean stop (1..N)", (this.stopTimes.reduce((a, b) => a + b, 0) / Math.max(1, this.stopTimes.length)).toFixed(1)]];
+  },
+  series() { return [["mean stop time", this.meanLog]]; },
+  step(dt) {
+    const stepN = Math.max(1, Math.round(this.P.perFrame));
+    this.anim = Math.min(this.anim + stepN, this.chain.length);
+    if (this.anim >= this.chain.length) this.anim = 0;
+    const mean = this.stopTimes.reduce((a, b) => a + b, 0) / Math.max(1, this.stopTimes.length);
+    this.meanLog.push(mean); if (this.meanLog.length > 1200) this.meanLog.splice(0, this.meanLog.length - 1200);
+    if (frameCount % 8 === 0) for (const s of this.stopTimes) pushSample(s);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const pad = { l: 84, r: 16, t: 44, b: 30 };
+    const gx = W - pad.l - pad.r, gy = H - pad.t - pad.b;
+    const yMax = Math.log10(Math.max(10, this.chainMax)) * 1.35;
+    const xMax = Math.max(60, ...this.stopTimes, this.chain.length);
+    const X = (v) => pad.l + v / xMax * gx, Y = (lv) => pad.t + gy - lv / yMax * gy;
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(pad.l, pad.t, gx, gy);
+
+    // faint fan of precomputed trajectories
+    ctx.strokeStyle = "rgba(51,89,136,.22)"; ctx.lineWidth = 1;
+    for (let i = 0; i < this._fanStep.length; i++) {
+      const stp = this._fanStep[i], vals = this._fanVals[i];
+      if (stp.length < 2) continue;
+      ctx.beginPath(); ctx.moveTo(X(stp[0]), pad.t + gy - vals[0] / yMax * gy);
+      for (let j = 1; j < stp.length; j++) ctx.lineTo(X(stp[j]), pad.t + gy - vals[j] / yMax * gy);
+      ctx.stroke();
+    }
+    // focus chain (log10 values)
+    ctx.strokeStyle = "#f0883e"; ctx.lineWidth = 2.4;
+    if (this.chainLog.length) {
+      ctx.beginPath(); ctx.moveTo(X(0), pad.t + gy - Math.log10(Math.max(1, this.P.focus)) / yMax * gy);
+      for (let i = 0; i < this.chainLog.length; i++) ctx.lineTo(X(i + 1), pad.t + gy - this.chainLog[i] / yMax * gy);
+      ctx.stroke();
+    }
+    // current animated value dot
+    const curVal = this.anim > 0 ? this.chainLog[this.anim - 1] : Math.log10(Math.max(1, this.P.focus));
+    ctx.fillStyle = "#f85149";
+    ctx.beginPath(); ctx.arc(X(this.anim), pad.t + gy - curVal / yMax * gy, 5, 0, 7); ctx.fill();
+    // axes
+    ctx.strokeStyle = "rgba(139,148,158,.5)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad.l, pad.t + gy); ctx.lineTo(pad.l + gx, pad.t + gy); ctx.stroke();
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("10^" + yMax.toFixed(1), pad.l + 4, pad.t + 10);
+    ctx.fillText("1", pad.l + 4, pad.t + gy - 2);
+    ctx.fillText("step", pad.l + 4, pad.t + gy + 12);
+    ctx.fillText("log₁₀ value", 8, pad.t + 18);
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`n=${this.P.focus}   stops=${this.chainLen}   max=10^${Math.log10(Math.max(1, this.chainMax)).toFixed(1)}   mean(1..${this.P.N})=${(this.stopTimes.reduce((a, b) => a + b, 0) / Math.max(1, this.stopTimes.length)).toFixed(1)}`, 12, 22);
+  },
+  xRange() { return [0, this.stopMax || 500]; },
+  presets: [
+    { name: "Classic 3n+1", code: "return n % 2 === 0 ? n / 2 : 3 * n + 1;", params: { N: 512, focus: 27 } },
+    { name: "Huge spike 77031", params: { N: 1024, focus: 77031 } },
+    { name: "3n+5 variant", code: "return n % 2 === 0 ? n / 3 : 5 * n + 1;", params: { N: 1024, focus: 27 } },
+  ],
+};
+
+const mandelbrot = {
+  id: "mandelbrot", label: "Fractal Orbit Explorer",
+  category: "Mathematical",
+  hint: "The map z→z²+c is editable: Mandelbrot fixes c at the pixel and varies z₀=0; Julia fixes c and varies z₀. Drag to pan, wheel to zoom, click a Mandelbrot pixel to jump to its Julia set. Explore the edge — every zoom reveals a new universe.",
+  histLabel: "escape-time distribution",
+  eqName: "next(zr, zi, cr, ci, params)",
+  eqSig: "zr,zi: current complex point · cr,ci: constant c · returns: [newRe, newIm] of the map",
+  eqDesc: "Points are iterated until they escape |z|>2 (count = colour) or the iteration cap runs out. Edit the map to z³+c, z⁴+c or a trig twist and the fractal — and the escape-time statistics — change character instantly.",
+  eqSpec: { argNames: ["zr", "zi", "cr", "ci", "params"], mustReturn: true },
+  params: [
+    { key: "m", label: "Set (0=Mandel, 1=Julia)", min: 0, max: 1, step: 1, value: 0 },
+    { key: "cr", label: "Julia c.re", min: -1.5, max: 1.5, step: 0.005, value: -0.8 },
+    { key: "ci", label: "Julia c.im", min: -1.5, max: 1.5, step: 0.005, value: 0.156 },
+    { key: "maxIter", label: "Max iterations", min: 16, max: 256, step: 16, value: 96 },
+  ],
+  defaultCode:
+`// z → z² + c
+const re = zr*zr - zi*zi + cr;
+const im = 2*zr*zi + ci;
+return [re, im];
+
+// z³ + c (trefoil-ish symmetry):
+// const re = zr*zr*zr - 3*zr*zi*zi + cr;
+// const im = 3*zr*zr*zi - zi*zi*zi + ci;
+// return [re, im];`,
+  P: {}, viewX: -0.6, viewY: 0, zoom: 1, _col: null, _img: null, _off: null, _dirty: 1, _avgEsc: 0, _px: -1, _py: -1, t: 0,
+  init() {
+    this.viewX = this.P.m === 0 ? -0.6 : this.P.cr;
+    this.viewY = this.P.m === 0 ? 0 : this.P.ci;
+    this.zoom = 1;
+    this._dirty = 1;
+    this._mkOff();
+  },
+  _mkOff() {
+    if (!this._off) {
+      const c = document.createElement("canvas"); c.width = 168; c.height = 120;
+      this._off = c;
+    }
+    if (!this._img) this._img = this._off.getContext("2d").createImageData(this._off.width, this._off.height);
+  },
+  layout() { this._dirty = 1; },
+  onParam(key) {
+    if (key === "m") { this.viewX = this.P.m === 0 ? -0.6 : this.P.cr; this.viewY = this.P.m === 0 ? 0 : this.P.ci; this.zoom = 1; }
+    this._dirty = 1;
+  },
+  onEquation() { this._dirty = 1; },
+  onPreset() { this._dirty = 1; },
+  panBy(dx, dy) { this.viewX -= dx * 3.2 / (this.zoom * (this._off ? this._off.height : 120)); this.viewY -= dy * 3.2 / (this.zoom * (this._off ? this._off.width : 168)); this._dirty = 1; },
+  zoomAt(f) { this.zoom *= f; this._dirty = 1; },
+  drop() { this.init(); setStatus("view reset"); },
+  measures() { return [["c", "(" + this.P.cr.toFixed(3) + "," + this.P.ci.toFixed(3) + ")"], ["zoom", "x" + this.zoom.toFixed(1)], ["avg escape", this._avgEsc.toFixed(1)], ["t", this.t.toFixed(1)]]; },
+  series() { return Math.round(this._avgEsc); },
+  step(dt) {
+    this.t += dt;
+    if (!this._dirty) return;
+    const w = this._off.width, h = this._off.height;
+    const eq = this.eq, P = this.P, maxI = Math.round(P.maxIter);
+    const image = this._img.data;
+    const julia = P.m === 1;
+    const cr = julia ? P.cr : 0, ci = julia ? P.ci : 0;
+    const iw = this.zoom * 3.4, ih = iw * h / w;
+    const x0 = this.viewX - iw / 2, y0 = this.viewY - ih / 2;
+    const sx = iw / w, sy = ih / h;
+    let sumEsc = 0, cnt = 0;
+    const buf = new Uint32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const zy = y0 + y * sy;
+      for (let x = 0; x < w; x++) {
+        const zx = x0 + x * sx;
+        let cz = julia ? cr : zx, czi = julia ? ci : zy;
+        let zr = julia ? zx : 0, zi = julia ? zy : 0;
+        let it = 0, escaped = 0;
+        while (it < maxI) {
+          const nz = eq(zr, zi, cz, czi, P);
+          zr = nz[0] || 0; zi = nz[1] || 0;
+          it++;
+          if (zr * zr + zi * zi > 4) { escaped = it; break; }
+        }
+        buf[y * w + x] = escaped;
+        if (escaped) { sumEsc += escaped; cnt++; }
+      }
+    }
+    this._avgEsc = cnt ? sumEsc / cnt : 0;
+    const data = image;
+    for (let i = 0; i < w * h; i++) {
+      const it = buf[i], o = i * 4;
+      let r, g, b;
+      if (!it) { r = 0; g = 0; b = 0; }
+      else {
+        const t = it / maxI;
+        const hue = (55 + t * 220) % 360;
+        [r, g, b] = hslTorgb(hue, 80, 45 + 25 * (1 - t));
+      }
+      data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+    }
+    const c2d = this._off.getContext("2d");
+    c2d.putImageData(this._img, 0, 0);
+    if (frameCount % 32 === 0) {
+      for (let i = 0; i < w * h; i += 13) pushSample(buf[i]);
+    }
+    this._dirty = 0;
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (this._off) ctx.drawImage(this._off, 0, 0, W, H);
+    ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
+    ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H);
+    ctx.stroke();
+    // orbit at pointer
+    if (this._px >= 0 && this._py >= 0) {
+      const julia = this.P.m === 1;
+      const iw = this.zoom * 3.4, ih = iw * this._off.height / this._off.width;
+      const x0 = this.viewX - iw / 2, y0 = this.viewY - ih / 2;
+      const wx = x0 + this._px / W * iw, wy = y0 + this._py / H * ih;
+      let zr, zi, cr, ci;
+      if (julia) { zr = wx; zi = wy; cr = this.P.cr; ci = this.P.ci; }
+      else { zr = 0; zi = 0; cr = wx; ci = wy; }
+      const X = (r, i) => (r - x0) / iw * W, Y = (r, i) => (i - y0) / ih * H;
+      ctx.strokeStyle = julia ? "rgba(88,166,255,.85)" : "rgba(255,196,88,.85)";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let i = 0; i < 42; i++) {
+        const sx = X(zr, zi), sy = Y(zr, zi);
+        if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+        const nz = this.eq(zr, zi, cr, ci, this.P);
+        zr = nz[0] || 0; zi = nz[1] || 0;
+      }
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`${this.P.m === 0 ? "Mandelbrot" : "Julia"}   zoom x${this.zoom.toFixed(1)}   Δ(x,y)=(${this.viewX.toFixed(4)},${this.viewY.toFixed(4)})`, 12, 22);
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText(this.P.m === 0 ? "dragged with 3n+1-tone orbit; click → Julia(c=point), wheel zoom" : "orbit = pointer point under c", 12, 36);
+  },
+  xRange() { return [0, Math.round(this.P.maxIter)]; },
+  presets: [
+    { name: "Mandelbrot", params: { m: 0, maxIter: 96 } },
+    { name: "Julia c=-0.8+0.156i", params: { m: 1, cr: -0.8, ci: 0.156, maxIter: 96 } },
+    { name: "Julia c=-0.7018-0.3842i", params: { m: 1, cr: -0.7018, ci: -0.3842, maxIter: 160 } },
+    { name: "Mandelbrot z³+c", params: { m: 0, maxIter: 96 }, code: "const re = zr*zr*zr - 3*zr*zi*zi + cr;\nconst im = 3*zr*zr*zi - zi*zi*zi + ci;\nreturn [re, im];" },
+  ],
+};
+function hslTorgb(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360; s /= 100; l /= 100;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const f = t => {
+    t = ((t % 1) + 1) % 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
+}
+
+const epicycles = {
+  id: "epicycles", label: "Fourier Epicycles",
+  category: "Mathematical",
+  hint: "Any closed curve is a sum of rotating circles. The lab samples your curve, decomposes it into circular motion (a discrete Fourier transform), then draws it back with the first N circles. More circles → less error. Circles are sorted by size, so the reconstruction converges fast.",
+  histLabel: "|Fourier coefficient| magnitude (k=1..N)",
+  eqName: "curve(t, params)",
+  eqSig: "t: phase 0..1 around the loop · returns: [x, y] on the curve",
+  eqDesc: "You define the target closed curve; the simulator takes 256 samples, computes DFT coefficients cₖ, and re-plays the path with the strongest harmonic circles. Edit to a rose, a heart, a polygon — any closed curve becomes a machine of circles.",
+  eqSpec: { argNames: ["t", "params"], mustReturn: true },
+  params: [
+    { key: "terms", label: "Circles", min: 1, max: 40, step: 1, value: 12 },
+    { key: "trace", label: "Trail", min: 40, max: 500, step: 10, value: 220 },
+    { key: "dots", label: "Sample dots", min: 0, max: 8, step: 1, value: 4 },
+  ],
+  defaultCode:
+`// five-petal rose (smooth, closed, multi-harmonic)
+const a = 2 * Math.PI * t;
+const r = 0.60 + 0.28 * Math.cos(5 * a);
+return [r * Math.cos(a), r * Math.sin(a)];
+
+// heart:
+// const a = 2 * Math.PI * t;
+// const x = 16 * Math.pow(Math.sin(a), 3);
+// const y = 13 * Math.cos(a) - 5 * Math.cos(2*a) - 2 * Math.cos(3*a) - Math.cos(4*a);
+// return [x / 17, -y / 17];`,
+  P: {}, coeff: [], trace: [], t: 0, _dirty: 1, err: 1, errLog: [], _buf: null, prev: { x: 0, y: 0 },
+  init() {
+    this.t = 0; this.trace.length = 0; this.errLog.length = 0; this._dirty = 1;
+  },
+  layout() {},
+  onParam() { this._dirty = 1; },
+  onEquation() { this._dirty = 1; },
+  onPreset() { this._dirty = 1; },
+  drop() { this.init(); setStatus("curve re-sampled"); },
+  _dft() {
+    const N = 256, eq = this.eq, P = this.P;
+    const pts = [];
+    let lo = 1e9, hi = -1e9;
+    for (let j = 0; j < N; j++) {
+      let p = eq(j / N, P);
+      if (!Array.isArray(p) || !isFinite(p[0]) || !isFinite(p[1])) p = [0, 0];
+      const px = p[0], py = p[1];
+      if (px < lo) lo = px; if (px > hi) hi = px;
+      if (py < lo) lo = py; if (py > hi) hi = py;
+      pts.push([px, py]);
+    }
+    const mid = (lo + hi) / 2, span = Math.max(1e-9, (hi - lo) / 2);
+    for (let j = 0; j < N; j++) { pts[j][0] = (pts[j][0] - mid) / span; pts[j][1] = (pts[j][1] - mid) / span; }
+    const mx = Math.max(1e-9, this.P.terms + 1);
+    const c = new Array(mx);
+    for (let k = 0; k < mx; k++) {
+      let re = 0, im = 0;
+      for (let j = 0; j < N; j++) {
+        const a = 2 * Math.PI * k * j / N;
+        re += pts[j][0] * Math.cos(a) + pts[j][1] * Math.sin(a);
+        im += -pts[j][0] * Math.sin(a) + pts[j][1] * Math.cos(a);
+      }
+      c[k] = { re: re / N, im: im / N, r: Math.hypot(re, im) / N, ph: Math.atan2(im, re), kh: k };
+    }
+    // sort harmonics by strength, keep k=0 first for the centroid
+    const rest = c.slice(1).sort((a, b) => b.r - a.r);
+    this.coeff = [c[0]].concat(rest);
+    this._buf = pts;
+    this._dirty = 0;
+  },
+  measures() { return [["circles", this.P.terms], ["error", (this.err * 100).toFixed(2) + " px"], ["harmonics", this.coeff.length], ["t", this.t.toFixed(1)]]; },
+  series() { return [["recon error", this.errLog]]; },
+  step(dt) {
+    if (this._dirty && this.eq) this._dft();
+    if (!this.coeff.length) return;
+    this.t += dt;
+    const cx = W / 2 + 40, cy = H / 2;
+    const R = Math.min(W, H) * 0.34;
+    let x = cx, y = cy;
+    const T = this.P.terms;
+    for (let k = 0; k <= T && k < this.coeff.length; k++) {
+      const c = this.coeff[k];
+      x += R * c.r * Math.cos(c.ph + 2 * Math.PI * c.kh * this.t);
+      y += R * c.r * Math.sin(c.ph + 2 * Math.PI * c.kh * this.t);
+    }
+    if (this.trace.length >= this.P.trace) this.trace.splice(0, this.trace.length - this.P.trace);
+    this.trace.push([x, y]);
+    let err = 0;
+    const steps = 32;
+    for (let j = 0; j < steps; j++) {
+      const tq = j / steps;
+      let rx = cx, ry = cy;
+      for (let k = 0; k <= T && k < this.coeff.length; k++) {
+        const c = this.coeff[k];
+        rx += R * c.r * Math.cos(c.ph + 2 * Math.PI * c.kh * tq);
+        ry += R * c.r * Math.sin(c.ph + 2 * Math.PI * c.kh * tq);
+      }
+      const p = this._buf[Math.round(tq * 255) % 256];
+      err += Math.hypot(rx - (cx + R * p[0]), ry - (cy + R * p[1]));
+    }
+    this.err = err / steps / R;
+    this.errLog.push(this.err); if (this.errLog.length > 1200) this.errLog.splice(0, this.errLog.length - 1200);
+    if (frameCount % 12 === 0) {
+      for (let k = 1; k < this.coeff.length; k++) pushSample(this.coeff[k].r);
+    }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const cx = W / 2 + 40, cy = H / 2;
+    const R = Math.min(W, H) * 0.34;
+    // faint target curve
+    if (this._buf) {
+      ctx.strokeStyle = "rgba(139,148,158,.28)"; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let j = 0; j <= 256; j++) {
+        const p = this._buf[j % 256];
+        const px = cx + R * p[0], py = cy + R * p[1];
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    // trace
+    if (this.trace.length > 1) {
+      ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(this.trace[0][0], this.trace[0][1]);
+      for (let i = 1; i < this.trace.length; i++) ctx.lineTo(this.trace[i][0], this.trace[i][1]);
+      ctx.stroke();
+    }
+    // epicycle chain
+    let x = cx, y = cy;
+    const T = this.P.terms, anim = this.t;
+    for (let k = 0; k <= T && k < this.coeff.length; k++) {
+      const c = this.coeff[k];
+      const rad = R * c.r;
+      const ang = c.ph + 2 * Math.PI * c.kh * anim;
+      ctx.strokeStyle = "rgba(88,166,255,.4)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.stroke();
+      ctx.strokeStyle = "rgba(88,166,255,.18)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + rad * Math.cos(ang), y + rad * Math.sin(ang)); ctx.stroke();
+      x += rad * Math.cos(ang); y += rad * Math.sin(ang);
+    }
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 7); ctx.fill();
+    // dots on target (epicycle reference)
+    if (this._buf && this.P.dots > 0) {
+      ctx.fillStyle = "rgba(255,196,88,.8)";
+      for (let d = 0; d < this.P.dots; d++) {
+        const p = this._buf[Math.round(d / this.P.dots * 256) % 256];
+        ctx.beginPath(); ctx.arc(cx + R * p[0], cy + R * p[1], 3, 0, 7); ctx.fill();
+      }
+    }
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`epicycles=${T}   error=${(this.err * 100).toFixed(2)} px   k=0..${T}`, 12, 22);
+  },
+  xRange() { return [0, 1]; },
+  presets: [
+    { name: "Five-petal rose", code: "const a = 2 * Math.PI * t;\nconst r = 0.60 + 0.28 * Math.cos(5 * a);\nreturn [r * Math.cos(a), r * Math.sin(a)];" },
+    { name: "Heart", code: "const a = 2 * Math.PI * t;\nconst x = 16 * Math.pow(Math.sin(a), 3);\nconst y = 13 * Math.cos(a) - 5 * Math.cos(2*a) - 2 * Math.cos(3*a) - Math.cos(4*a);\nreturn [x / 17, -y / 17];" },
+    { name: "Triangle", code: "const p = 3 * t, kk = Math.floor(p), u = p - kk;\nconst a = 2 * Math.PI * kk / 3;\nconst x1 = Math.cos(a), y1 = Math.sin(a);\nconst x2 = Math.cos(a + 2 * Math.PI / 3), y2 = Math.sin(a + 2 * Math.PI / 3);\nreturn [x1 + (x2 - x1) * u, y1 + (y2 - y1) * u];" },
+    { name: "Lissajous-3", code: "const a = 2 * Math.PI * t;\nreturn [0.7 * Math.sin(3 * a), 0.7 * Math.sin(2 * a + 1)];" },
+  ],
+};
+
+const newtonFractal = {
+  id: "newtonFractal", label: "Newton Basin Fractal",
+  category: "Mathematical",
+  hint: "Run Newton's method from every pixel: z ← z − f(z)/f′(z). Colours mark which root each pixel tumbles into, brightness marks how fast. For f(z)=z³−1 the three basins interlace into infinite filaments — a fractal polymer made of pure algebra.",
+  histLabel: "iterations to converge over the grid",
+  eqName: "poly(zr, zi, params)",
+  eqSig: "zr,zi: current iterate · returns: [f.re, f.im, f'.re, f'.im]",
+  eqDesc: "Supply f and its derivative as four real numbers. Newton's step is applied to the whole grid; edit to z⁴−1, z⁵−1 or a polynomial with asymmetric roots and the basin tangle redraws. Increase maxIter to sharpen the filaments.",
+  eqSpec: { argNames: ["zr", "zi", "params"], mustReturn: true },
+  params: [
+    { key: "maxIter", label: "Max iterations", min: 8, max: 128, step: 4, value: 40 },
+    { key: "lr", label: "Step factor", min: 0.2, max: 1.4, step: 0.05, value: 1 },
+  ],
+  defaultCode:
+`// f(z) = z³ − 1 , f'(z) = 3z²
+const z3r = zr*zr*zr - 3*zr*zi*zi - 1;
+const z3i = 3*zr*zr*zi - zi*zi*zi;
+const fpr = 3 * (zr*zr - zi*zi);
+const fpi = 6 * zr * zi;
+return [z3r, z3i, fpr, fpi];
+
+// z⁴ − 1:
+// const r4 = (zr*zr + zi*zi) * (zr*zr + zi*zi);
+// const z4r = (zr*zr - zi*zi) * (zr*zr - zi*zi) - 4 * zr*zr * zi*zi - 1;
+// const z4i = 4 * zr * zi * (zr*zr - zi*zi);
+// const fpr4 = 4 * (zr*zr*zr - 3 * zr * zi*zi);
+// const fpi4 = 4 * (3 * zr*zr * zi - zi*zi*zi);
+// return [z4r, z4i, fpr4, fpi4];`,
+  P: {}, _col: null, _img: null, _off: null, _dirty: 1, t: 0, roots: 0, _avgIter: 40,
+  init() { this._dirty = 1; this._mkOff(); this.t = 0; },
+  _mkOff() {
+    if (!this._off) {
+      const c = document.createElement("canvas"); c.width = 150; c.height = 110;
+      this._off = c;
+    }
+    if (!this._img) this._img = this._off.getContext("2d").createImageData(this._off.width, this._off.height);
+  },
+  layout() { this._dirty = 1; },
+  onParam() { this._dirty = 1; },
+  onEquation() { this._dirty = 1; },
+  onPreset() { this._dirty = 1; },
+  drop() { this.init(); setStatus("basins redrawn"); },
+  measures() { return [["roots found", this.roots], ["avg iters", this._avgIter.toFixed(1)], ["f", "zⁿ−1"], ["t", this.t.toFixed(1)]]; },
+  series() { return Math.round(this._avgIter); },
+  step(dt) {
+    this.t += dt;
+    if (!this._dirty) return;
+    const w = this._off.width, h = this._off.height;
+    const eq = this.eq, P = this.P, maxI = Math.round(P.maxIter), lr = P.lr;
+    const x0 = -1.7, y0 = -1.7 * h / w, span = 3.4;
+    const sx = span / w, sy = span / h;
+    const buf = new Int32Array(w * h), fin = new Float64Array(w * h * 2), rootsHit = new Uint8Array(w * h);
+    let sumIt = 0, cnt = 0;
+    for (let y = 0; y < h; y++) {
+      const zy = y0 + y * sy;
+      for (let x = 0; x < w; x++) {
+        let zr = x0 + x * sx, zi = zy, it = 0;
+        let ok = 0;
+        while (it < maxI) {
+          const c = eq(zr, zi, P);
+          const fr = c[0] || 0, fi = c[1] || 0, fpr = c[2] || 0, fpi = c[3] || 0;
+          const den = fpr * fpr + fpi * fpi + 1e-12;
+          const nx = fr * fpr + fi * fpi, ny = fi * fpr - fr * fpi;
+          zr -= lr * nx / den; zi -= lr * ny / den;
+          it++;
+          if (fr * fr + fi * fi < 1e-10) { ok = it; break; }
+        }
+        buf[y * w + x] = ok;
+        if (ok) { sumIt += ok; cnt++; fin[(y * w + x) * 2] = zr; fin[(y * w + x) * 2 + 1] = zi; rootsHit[y * w + x] = 1; }
+      }
+    }
+    // cluster converged endpoints into distinct roots (tolerance coupling)
+    const seeds = [];
+    for (let i = 0; i < w * h; i++) {
+      if (!rootsHit[i]) continue;
+      const a = fin[i * 2], b = fin[i * 2 + 1];
+      let placed = false;
+      for (const s of seeds) { if (Math.hypot(s[0] - a, s[1] - b) < 0.12) { placed = true; break; } }
+      if (!placed) seeds.push([a, b]);
+    }
+    this.roots = seeds.length;
+    this._avgIter = cnt ? sumIt / cnt : 0;
+    const data = this._img.data;
+    const hueFor = seeds.map((s, i) => (i * 137.5 + 88) % 360);
+    for (let i = 0; i < w * h; i++) {
+      const it = buf[i], o = i * 4;
+      if (!it) { data[o] = 2; data[o + 1] = 8; data[o + 2] = 14; data[o + 3] = 255; continue; }
+      // colour by nearest root ENDPOINT for this pixel
+      let hue = 200, best = 1e9;
+      for (let s = 0; s < seeds.length; s++) {
+        const d2 = Math.hypot(fin[i * 2] - seeds[s][0], fin[i * 2 + 1] - seeds[s][1]);
+        if (d2 < best) { best = d2; hue = hueFor[s]; }
+      }
+      const brt = 30 + 46 * (1 - it / maxI);
+      const rgb = hslTorgb(hue, 82, brt);
+      data[o] = rgb[0]; data[o + 1] = rgb[1]; data[o + 2] = rgb[2]; data[o + 3] = 255;
+    }
+    this._off.getContext("2d").putImageData(this._img, 0, 0);
+    if (frameCount % 32 === 0) { for (let i = 0; i < w * h; i += 9) pushSample(buf[i]); }
+    this._dirty = 0;
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (this._off) ctx.drawImage(this._off, 0, 0, W, H);
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`Newton basins   roots=${this.roots}   avg iters=${this._avgIter.toFixed(1)}`, 12, 22);
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("darker = converged fast · coloured by root", 12, 36);
+  },
+  xRange() { return [0, Math.round(this.P.maxIter)]; },
+  presets: [
+    { name: "z³ − 1", code: "const z3r = zr*zr*zr - 3*zr*zi*zi - 1;\nconst z3i = 3*zr*zr*zi - zi*zi*zi;\nconst fpr = 3 * (zr*zr - zi*zi);\nconst fpi = 6 * zr * zi;\nreturn [z3r, z3i, fpr, fpi];", params: { maxIter: 40 } },
+    { name: "z⁴ − 1", code: "const rr = zr*zr + zi*zi;\nconst z4r = rr*rr*Math.cos(4*Math.atan2(zi,zr)) - 1;\nconst z4i = rr*rr*Math.sin(4*Math.atan2(zi,zr));\nconst fpr4 = 4 * (zr*zr*zr - 3 * zr * zi*zi);\nconst fpi4 = 4 * (3 * zr*zr * zi - zi*zi*zi);\nreturn [z4r, z4i, fpr4, fpi4];", params: { maxIter: 48 } },
+    { name: "z⁵ − 1", code: "const a = Math.atan2(zi, zr);\nconst m2 = zr*zr + zi*zi; const m5 = m2*m2*Math.sqrt(m2);\nreturn [m5*Math.cos(5*a) - 1, m5*Math.sin(5*a), 5*(zr*zr-zi*zi)*Math.sqrt(m2), 10*zr*zi*Math.sqrt(m2)];", params: { maxIter: 56 } },
+    { name: "asymmetric z³+iz²−1", code: "const z2r = zr*zr - zi*zi, z2i = 2*zr*zi;\nconst z3r = zr*z2r - zi*z2i, z3i = zr*z2i + zi*z2r;\nconst fpr = 3*z2r - 2*zi, fpi = 3*z2i + 2*zr;\nreturn [z3r + z2i - 1, z3i - z2r, fpr, fpi];", params: { maxIter: 56 } },
+  ],
+};
+
+const seriesZoo = {
+  id: "seriesZoo", label: "Famous Series",
+  category: "Mathematical",
+  hint: "Watch famous infinite series converge: partial sums staircase toward their constant. Residual collapses on a log scale — alternating terms converge linearly, ζ(2) quadratically, e's series factorially. Edit the term and see the decay rate change with it.",
+  histLabel: "partial sums near the limit (peak = the constant)",
+  eqName: "term(k, params)",
+  eqSig: "k: term index 1,2,3… · returns: term value (can be signed)",
+  eqDesc: "The sum S = Σ term(k) is animated; you provide only the term. Presets encode ζ(2)→π²/6, ln2, π/4 and e; the residual’s slope on the log inset exposes each series’ convergence order.",
+  eqSpec: { argNames: ["k", "params"], mustReturn: true },
+  params: [
+    { key: "nMax", label: "Terms", min: 16, max: 2000, step: 16, value: 400 },
+    { key: "perFrame", label: "Terms / frame", min: 1, max: 60, step: 1, value: 8 },
+    { key: "limit", label: "Constant target", min: -3, max: 4, step: 0.01, value: 1.644934 },
+  ],
+  defaultCode:
+`// Basel: ζ(2) = 1 + 1/4 + 1/9 + … = π²/6 ≈ 1.644934
+return 1 / (k * k);
+
+// alternating harmonic → ln 2 ≈ 0.693147:
+// return (k % 2 ? 1 : -1) / k;
+
+// Gregory–Leibniz → π/4 ≈ 0.785398:
+// return (k % 2 ? 1 : -1) / (2 * k - 1);
+
+// e = Σ 1/k! (needs nMax ≥ 40):
+// let f = 1; for (let i = 2; i <= k; i++) f *= i; return 1 / f;`,
+  P: {}, sums: [], resLog: [], t: 0, S: 0, n: 0, _histOK: false,
+  init() { this.S = 0; this.n = 0; this.sums.length = 0; this.resLog.length = 0; },
+  layout() {},
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop() { this.init(); setStatus("sum restarted"); },
+  measures() { return [["S(" + this.n + ")", this.S.toFixed(6)], ["err", Math.abs(this.S - this.P.limit).toExponential(2)], ["limit", this.P.limit.toFixed(4)], ["terms/frame", this.P.perFrame]]; },
+  series() { return [["residual |S−L|", this.resLog]]; },
+  step(dt) {
+    const eq = this.eq, P = this.P;
+    for (let c = 0; c < Math.max(1, Math.round(P.perFrame)); c++) {
+      this.n++;
+      let v = 0;
+      try { v = eq(this.n, P); } catch (e) { v = 0; eqRuntimeError(e); }
+      if (!isFinite(v)) v = 0;
+      this.S += v;
+      if (this.n >= P.nMax) { this.n = 0; this.S = 0; }
+      this.sums.push(this.S); if (this.sums.length > 4000) this.sums.splice(0, this.sums.length - 4000);
+    }
+    const res = Math.abs(this.S - P.limit);
+    this.resLog.push(res); if (this.resLog.length > 1200) this.resLog.splice(0, this.resLog.length - 1200);
+    if (frameCount % 4 === 0) pushSample(this.S);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const pad = { l: 64, r: 14, t: 40, b: 26 };
+    const gx = W - pad.l - pad.r, gy = H - pad.t - pad.b;
+    const L = this.P.limit;
+    const lo = Math.min(L - 0.02, ...this.sums.slice(-400)), hi = Math.max(L + 0.02, ...this.sums.slice(-400));
+    const span = Math.max(0.02, hi - lo);
+    const X = i => pad.l + (i / Math.max(1, this.sums.length)) * gx;
+    const Y = v => pad.t + gy - (v - lo) / span * gy;
+    // limit line
+    ctx.strokeStyle = "rgba(63,185,80,.65)"; ctx.lineWidth = 1.4; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(pad.l, Y(L)); ctx.lineTo(pad.l + gx, Y(L)); ctx.stroke(); ctx.setLineDash([]);
+    // partial sums staircase
+    ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(pad.l, Y(this.sums[0] || 0));
+    for (let i = 0; i < this.sums.length; i++) ctx.lineTo(X(i), Y(this.sums[i]));
+    ctx.stroke();
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("limit", pad.l + 4, Y(L) - 4);
+    ctx.fillText("S(n)", pad.l + 4, pad.t + 10);
+    // residual inset (log slope)
+    const rw = W * 0.34, rh = H * 0.24, rx = W - rw - 10, ry = H - rh - 8;
+    ctx.strokeStyle = "rgba(139,148,158,.3)"; ctx.lineWidth = 1;
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.fillStyle = "#e3b341"; ctx.lineWidth = 1.4;
+    const rmax = Math.max(1e-9, ...this.resLog.slice(-200)) * 2;
+    ctx.beginPath();
+    for (let i = 0; i < this.resLog.length; i++) {
+      const xx = rx + i / Math.max(1, this.resLog.length - 1) * rw;
+      const yy = ry + rh - Math.log10(this.resLog[i] / rmax + 1e-9) / 2 * rh;
+      if (i === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#8b949e"; ctx.font = "10px ui-monospace, monospace";
+    ctx.fillText("residual |S−L| (log)", rx + 4, ry + 12);
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`Σ term(k)  S(${this.n})=${this.S.toFixed(6)}  err=${Math.abs(this.S - L).toExponential(2)}  limit=${L.toFixed(4)}`, 12, 22);
+  },
+  xRange() { return [this.P.limit - 0.25, this.P.limit + 0.25]; },
+  presets: [
+    { name: "Basel ζ(2)→π²/6", code: "return 1 / (k * k);", params: { limit: 1.644934, nMax: 400 } },
+    { name: "Alternating → ln 2", code: "return (k % 2 ? 1 : -1) / k;", params: { limit: 0.693147, nMax: 400 } },
+    { name: "Gregory–Leibniz → π/4", code: "return (k % 2 ? 1 : -1) / (2 * k - 1);", params: { limit: 0.785398, nMax: 400 } },
+    { name: "Euler → e", code: "let f = 1; for (let i = 2; i <= k; i++) f *= i; return 1 / f;", params: { limit: 2.718281828, nMax: 120 } },
+  ],
+};
+
+const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit, syncPendula, collatz, mandelbrot, epicycles, newtonFractal, seriesZoo];
 let modeIndex = 0;
 let frameCount = 0;
 

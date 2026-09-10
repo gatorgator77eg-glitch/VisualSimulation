@@ -85,6 +85,19 @@
     position: absolute; top: 10px; left: 12px; font-size: 11.5px; color: var(--muted);
     background: rgba(13,17,23,.75); padding: 4px 8px; border-radius: 4px; pointer-events: none;
   }
+  #readouts {
+    position: absolute; top: 10px; right: 12px; font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px; color: #c9d1d9; background: rgba(13,17,23,.78); padding: 6px 9px;
+    border-radius: 6px; border: 1px solid rgba(48,54,61,.6); pointer-events: none;
+    white-space: pre; line-height: 1.55; text-align: right; max-width: 46%;
+  }
+  #readouts .muted { color: var(--muted); }
+  #readouts b { color: var(--accent); font-weight: 600; }
+  #spark {
+    position: absolute; right: 12px; bottom: 12px; width: 220px; height: 64px;
+    border-radius: 6px; border: 1px solid rgba(48,54,61,.7); background: rgba(13,17,23,.78);
+    pointer-events: none;
+  }
   /* ---------- Sidebar sections ---------- */
   .section { border-bottom: 1px solid var(--border); padding: 10px 14px; }
   .section h2 {
@@ -126,6 +139,22 @@
   }
   .preset:hover { color: var(--text); border-color: var(--accent); }
   .preset.active { color: var(--accent); border-color: var(--accent); }
+  /* snapshots */
+  .snaprow { display: flex; gap: 6px; margin-bottom: 6px; }
+  .snaprow input[type=text] {
+    flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px; color: var(--text);
+    background: #0d1117; border: 1px solid var(--border); border-radius: 6px; outline: none;
+  }
+  .snaprow input[type=text]:focus { border-color: var(--accent); }
+  .snaprow .topbtn { padding: 4px 9px; font-size: 11.5px; }
+  #snaps { display: flex; flex-direction: column; gap: 5px; margin-bottom: 6px; }
+  .snapitem {
+    display: flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 6px;
+    background: var(--panel2); border: 1px solid var(--border); font-size: 11.5px;
+  }
+  .snapitem .sname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .snapitem .smode { color: var(--muted); font-size: 10px; }
+  .snapitem button { padding: 2px 7px; font-size: 10.5px; }
   /* ---------- Histogram strip ---------- */
   #histo {
     height: 190px; background: var(--panel); border-top: 1px solid var(--border);
@@ -203,10 +232,24 @@
         <div class="presets" id="presets"></div>
       </div>
       <div class="section">
+        <h2>Snapshots <span class="resetlink" id="snapClear">clear all</span></h2>
+        <div class="snaprow">
+          <input type="text" id="snapName" placeholder="name this state…" maxlength="40" spellcheck="false">
+          <button class="topbtn" id="btnSnapSave" title="Save current simulation, params and equation">＋ Save</button>
+        </div>
+        <div id="snaps"></div>
+        <div class="snaprow">
+          <button class="topbtn" id="btnShareLink" title="Copy a shareable URL of the current state">🔗 Share state</button>
+        </div>
+      </div>
+        <div class="section">
         <h2>Display</h2>
         <div class="togglerow"><input type="checkbox" id="trails"><label for="trails">Motion trails</label></div>
         <div class="togglerow"><input type="checkbox" id="showTheory" checked><label for="showTheory">Theoretical curve overlay</label></div>
         <div class="togglerow"><input type="checkbox" id="colorBySpeed" checked><label for="colorBySpeed">Color particles by speed</label></div>
+        <div class="togglerow"><input type="checkbox" id="showReadouts" checked><label for="showReadouts">Live measures</label></div>
+        <div class="togglerow"><input type="checkbox" id="showSpark" checked><label for="showSpark">Time-series plot</label></div>
+        <div class="togglerow"><input type="checkbox" id="useWorker" checked><label for="useWorker">Worker offload (smoother)</label></div>
       </div>
       <div class="section">
         <h2>Shortcuts</h2>
@@ -220,6 +263,8 @@
       <div id="canvaswrap">
         <canvas id="sim"></canvas>
         <div id="hint"></div>
+        <div id="readouts"></div>
+        <canvas id="spark"></canvas>
       </div>
       <div id="histo">
         <div id="histohead">
@@ -296,6 +341,7 @@ function compileEq(code, argNames, bodyMustReturn) {
 // ---------- canvas setup --------------------------------------------------
 const canvas = $("sim"), ctx = canvas.getContext("2d");
 const hcanvas = $("histocanvas"), hctx = hcanvas.getContext("2d");
+const sparkCanvas = $("spark"), sctx = sparkCanvas.getContext("2d");
 let W = 100, H = 100;                       // css pixel size of sim canvas
 let HW = 100, HH = 100;                     // histogram canvas
 function resize() {
@@ -333,19 +379,33 @@ function frame(now) {
   requestAnimationFrame(frame);
   const realDt = Math.min(0.05, (now - lastT) / 1000);
   lastT = now;
-  if (paused) { mode.draw(); drawHistogram(); return; }
+  if (paused) { mode.draw(); drawHistogram(); updateReadouts(); drawSpark(); return; }
   accumulator += realDt * speedMul;
   let steps = 0;
-  while (accumulator >= DT && steps < 600) {   // budget: never wedge the tab
-    mode.step(DT);
-    simTime += DT;
-    accumulator -= DT;
-    steps++;
+  if (workerActive) {
+    if (!workerBusy && accumulator >= DT) {
+      let n = 0;
+      while (accumulator >= DT && n < WORKER_CHUNK) { accumulator -= DT; n++; }
+      workerBusy = true;
+      simWorker.postMessage({ cmd: "run", steps: n, dt: DT, modeId: mode.id });
+    } else if (accumulator > 600 * DT) {
+      accumulator = 0;               // worker fell behind; drop backlog
+    }
+  } else {
+    while (accumulator >= DT && steps < 600) {   // budget: never wedge the tab
+      mode.step(DT);
+      simTime += DT;
+      accumulator -= DT;
+      steps++;
+    }
+    if (steps >= 600) accumulator = 0;           // drop backlog if overloaded
   }
-  if (steps >= 600) accumulator = 0;           // drop backlog if overloaded
   frameCount++;
   mode.draw();
   drawHistogram();
+  if (!workerActive && steps > 0) recordSeries(simTime);
+  updateReadouts();
+  drawSpark();
 }
 
 // ==========================================================================
@@ -2968,6 +3028,19 @@ return params.C * (yL + yR - 2 * y) - params.damp * vy;
     ctx.fillText(`drive f=${this.P.f.toFixed(2)} Hz   string n=1 mode at f₁=${f1.toFixed(2)} Hz   nodes stay at rest`, 12, 18);
   },
 
+  measures() {
+    const f1 = Math.sqrt(this.P.C) / (2 * this.L);
+    const c = this.y ? this.y[Math.floor(this.y.length / 2)] : 0;
+    return {
+      "sim t": this.t.toFixed(2) + "s",
+      "drive f": this.P.f.toFixed(3) + " Hz",
+      "n=1 mode f₁": f1.toFixed(3) + " Hz",
+      "centre y": c.toPrecision(3),
+      "peak amp": this.maxAmp.toPrecision(3),
+    };
+  },
+  series() { return this.y ? this.y[Math.floor(this.y.length / 2)] : 0; },
+
   xRange() { const s = Math.max(this.maxAmp * 1.2, 0.5); return [-s, s]; },
   presets: [
     { name: "n=1 fundamental", params: { f: 1.53, C: 600, A: 1, damp: 0.1 } },
@@ -3094,6 +3167,19 @@ return params.A * Math.sin(2 * Math.PI * params.f * tau) / Math.sqrt(R / 20 + 1)
     ctx.fillText(`source speed ${this.P.vs.toFixed(2)}·c   ahead ↑ pitch, behind ↓ pitch (histogram shows both)`, 12, 18);
   },
 
+  measures() {
+    const Xo = Math.min(140, Math.min(W, H) * 0.22);
+    const fa = this.recvFreq(Xo), fb = this.recvFreq(-Xo);
+    return {
+      "sim t": this.tSim.toFixed(2) + "s",
+      "v/c": this.P.vs.toFixed(3),
+      "f ahead": fa.toFixed(3) + " Hz",
+      "f behind": fb.toFixed(3) + " Hz",
+      "ratio ahead/behind": (fa / Math.max(fb, 1e-3)).toFixed(3),
+    };
+  },
+  series() { const Xo = Math.min(140, Math.min(W, H) * 0.22); return this.recvFreq(Xo); },
+
   xRange() { return [0, 5]; },
   presets: [
     { name: "Slow source vs=0.3", params: { vs: 0.3 } },
@@ -3209,6 +3295,25 @@ return params.vp * k + params.b * k * k;
     return O[0];
   },
 
+  measures() {
+    const P = this.P, k0 = P.k0, dk = Math.max(P.sk, 1e-4);
+    const w0 = this._omAt(k0), wa = this._omAt(k0 + dk), wb = this._omAt(k0 - dk);
+    const vg = (wa - wb) / (2 * dk), vp = w0 / Math.max(k0, 1e-4);
+    return {
+      "sim t": this.t.toFixed(2) + "s",
+      "envelope vg": vg.toFixed(2) + " px/s",
+      "phase vp": vp.toFixed(2) + " px/s",
+      "b (dispers)": P.b.toFixed(2),
+    };
+  },
+  series() {
+    // sample the superposition at its centre — shows the carrier wave moving by
+    const x = W * 0.45, N = Math.min(64, this.ks.length);
+    let v = 0;
+    for (let m = 0; m < N; m++) v += this.amps[m] * Math.sin(this.ks[m] * (x - W * 0.45) - this.om[m] * this.t);
+    return v;
+  },
+
   xRange() { return [-0.1, 0.1]; },
   presets: [
     { name: "Linear (no spreading)", params: { b: 0, vp: 1.2 } },
@@ -3224,6 +3329,7 @@ return params.vp * k + params.b * k * k;
 const soliton = {
   id: "soliton", label: "KdV Solitons",
   category: "Waves",
+  worker: true,
   hint: "The Korteweg–de Vries equation puts nonlinear steepening against dispersion to create solitons — waves that hold their shape and pass cleanly through one another. Watch a tall (fast) soliton overtake and swap past a short one.",
   histLabel: "Peak wave height u",
   eqName: "evolve(u, ux, uxxx, params)",
@@ -3388,6 +3494,19 @@ return -params.nl * u * ux - params.disp * uxxx;
     ctx.fillText(`KdV: u_t = −${this.P.nl.toFixed(1)}·u·u_x − ${this.P.disp.toFixed(3)}·u_xxx   ·   tall soliton rides fast & passes the short one`, 12, 18);
   },
 
+  measures() {
+    const fs = fieldStats(this.u) || {};
+    const L = this.L || 4 * Math.PI;
+    let count = 0;
+    const th = 0.3 * Math.max(fs.peak || 0, 1e-6);
+    let inRun = false;
+    for (let i = 0; i < this.u.length; i++) {
+      if (this.u[i] > th) { if (!inRun) { count++; inRun = true; } } else { inRun = false; }
+    }
+    return { "sim t": this.t.toFixed(2) + "s", "peak u": (fs.peak || 0).toPrecision(3), "solitons ≈": count };
+  },
+  series() { const fs = fieldStats(this.u); return fs ? fs.peak : 0; },
+
   xRange() { return [0, 10]; },
   presets: [
     { name: "Two solitons collide", params: { nl: 0.45, disp: 0.05 } },
@@ -3498,6 +3617,21 @@ return 1 / n;
     this.A = Amax;
   },
 
+  measures() {
+    const fam = ["sawtooth", "mellow string", "square", "flute"];
+    let harmAmpSum = 0; for (const a of this.amps) harmAmpSum += a * a;
+    const rms = Math.sqrt(harmAmpSum);
+    return {
+      "sim t": this.t.toFixed(2) + "s",
+      "tone": fam[Math.round(this.P.style)] || "custom",
+      "f₀": this.P.f0.toFixed(1) + " Hz",
+      "harmonics": this.amps.length,
+      "RMS amp": rms.toPrecision(3),
+      "instant y": this.wave(this.t).toPrecision(3),
+    };
+  },
+  series() { return this.wave(this.t); },
+
   xRange() { const s = Math.max(this.A, 0.5); return [-s * 1.2, s * 1.2]; },
   presets: [
     { name: "Sawtooth (brass)", params: { style: 0, f0: 4 } },
@@ -3507,7 +3641,1374 @@ return 1 / n;
   ],
 };
 
-const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre];
+// ==========================================================================
+//  PI BY DARTS — Monte Carlo: circle inscribed in a square
+// ==========================================================================
+const circlePi = {
+  id: "circlePi", label: "π by Darts (circle in a square)",
+  category: "Mathematical",
+  hint: "Throw uniform random darts at a unit square, tagging whether each lands inside the inscribed circle. The circle's area is π/4 of the square's, so π ≈ 4·(inside/total) as darts pile up. Edit the equation to retarget any shape.",
+  histLabel: "π estimate  4·hits/total",
+  eqName: "inShape(x, y, params)",
+  eqSig: "x,y ∈ [−1,1] · returns 1 (truthy) if the point is inside, 0 otherwise",
+  eqDesc: "Each dart is a uniform random point in the square [−1,1]². The equation decides inside vs outside, defaulting to the unit circle x²+y²≤r². The ratio (hits/total)×4 converges to 4·(shape area ÷ 4) = area of the shape relative to a [−1,1]² square — for the unit circle that is exactly π. A shaded target + live estimator are drawn.",
+  eqSpec: { argNames: ["x", "y", "params"], mustReturn: true },
+  params: [
+    { key: "n",     label: "Darts / step", min: 50,   max: 4000, step: 50,   value: 600 },
+    { key: "r",     label: "Radius r",     min: 0.2,  max: 1,    step: 0.05, value: 1 },
+  ],
+  defaultCode:
+`// Inscribes radius-r circle inside square [−1,1]×[−1,1].
+// area(circle)/area(square) = (π r²)/4 → π ≈ 4·hits/total when r = 1.
+return (x * x + y * y <= params.r * params.r) ? 1 : 0;
+
+// try me — square target (area 4/4 = 1) → ratio → 4:
+// const a = Math.max(Math.abs(x), Math.abs(y)); return (a <= params.r) ? 1 : 0;
+
+// try me — ellipse semi-axes 1 and 0.5 → ratio → π·0.5:
+// return (x*x/1 + y*y/0.25 <= 1) ? 1 : 0;`,
+  P: {}, hits: 0, total: 0, pts: [], lastEst: 0, seriesData: [], maskDirty: true,
+  init() { this.hits = 0; this.total = 0; this.pts.length = 0; this.seriesData.length = 0; this.lastEst = 0; this.maskDirty = true; },
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("reset darts"); },
+  layout() { this.maskDirty = true; },
+  measures() {
+    return [
+      ["total", this.total.toLocaleString("en-US")],
+      ["inside", this.hits.toLocaleString("en-US")],
+      ["ratio×4", this.lastEst.toFixed(5)],
+      ["|π−est|", Math.abs(Math.PI - this.lastEst).toExponential(2)],
+    ];
+  },
+  series() { return [["π est", this.seriesData]]; },
+
+  step(dt) {
+    const P = this.P, N = Math.max(1, Math.floor(P.n)), r = P.r;
+    for (let i = 0; i < N; i++) {
+      const x = rng() * 2 - 1, y = rng() * 2 - 1;
+      let inS = 0;
+      try { inS = this.eq(x, y, { r }) ? 1 : 0; } catch (e) { inS = 0; eqRuntimeError(e); }
+      if (!isFinite(inS)) inS = 0;
+      if (inS === 1) this.hits++;
+      this.total++;
+      if (this.pts.length < 5000) { this.pts.push(x); this.pts.push(y); this.pts.push(inS); }
+    }
+    this.lastEst = 4 * this.hits / this.total;
+    pushSample(this.lastEst);
+    this.seriesData.push(this.lastEst);
+    if (this.seriesData.length > 2000) this.seriesData.shift();
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (!this.cv) { this.cv = document.createElement("canvas"); this.oct = this.cv.getContext("2d"); }
+    const cx = W / 2, cy = H / 2, R = 0.94 * Math.min(W, H) / 2;
+    this.cv.width = W; this.cv.height = H;
+    if (this.maskDirty) {
+      const o = this.oct;
+      o.fillStyle = "#0b0f14"; o.fillRect(0, 0, W, H);
+      const g = 6;
+      o.fillStyle = "rgba(88,166,255,.16)";
+      for (let py = 0; py < H; py += g) {
+        const y = 1 - 2 * (py / H);
+        for (let px = 0; px < W; px += g) {
+          const x = 2 * (px / W) - 1;
+          let on = 0;
+          try { on = this.eq(x, y, { r: this.P.r }) ? 1 : 0; } catch (e) { on = 0; }
+          if (on) o.fillRect(px, py, g, g);
+        }
+      }
+      o.strokeStyle = "rgba(88,166,255,.7)"; o.lineWidth = 2;
+      o.strokeRect(cx - R, cy - R, 2 * R, 2 * R);
+      this.maskDirty = false;
+    }
+    ctx.drawImage(this.cv, 0, 0);
+    // darts
+    const n = this.pts.length / 3;
+    for (let i = 0; i < n; i++) {
+      const x = this.pts[i * 3], y = this.pts[i * 3 + 1], inS = this.pts[i * 3 + 2];
+      ctx.fillStyle = inS === 1 ? "#f85149" : "rgba(160,200,255,.55)";
+      ctx.beginPath();
+      ctx.arc(cx + x * R, cy - y * R, 2, 0, 7);
+      ctx.fill();
+    }
+    // live estimate banner
+    ctx.fillStyle = "rgba(9,12,16,.8)";
+    ctx.fillRect(10, H - 44, Math.min(320, W - 20), 34);
+    ctx.fillStyle = "#e6edf3"; ctx.font = "14px Consolas,monospace";
+    ctx.fillText(`π ≈ ${this.lastEst.toFixed(5)}   (${this.hits}/${this.total} inside)`, 16, H - 21);
+  },
+
+  xRange() { return [2.9, 3.5]; },
+  presets: [
+    { name: "Unit circle (π)", params: { r: 1, n: 600 } },
+    { name: "Small unit circle", params: { r: 0.5, n: 600 } },
+    { name: "Fast, noisier", params: { r: 1, n: 100 } },
+  ],
+};
+
+// ==========================================================================
+//  PI BY POLYGONS — Archimedes perimeter method
+// ==========================================================================
+const polygonPi = {
+  id: "polygonPi", label: "π by Polygons (Archimedes)",
+  category: "Mathematical",
+  hint: "Inscribe a regular n-gon in a unit circle. Its perimeter approaches 2π from below as n grows; editing the side equation to 2·tan(π/n) (circumscribed) approaches it from above. Watch the two bounds close in on π.",
+  histLabel: "π estimate  n·side/2",
+  eqName: "side(n, params)",
+  eqSig: "n: number of sides · returns: length of one side of the n-gon (use 2·sin(π/n) inscribed, 2·tan(π/n) circumscribed)",
+  eqDesc: "A regular n-gon inscribed in a unit circle has side 2·sin(π/n), so its perimeter is n·side and π_est = n·side/2 — a lower bound that climbs toward π. Switching to 2·tan(π/n) gives the circumscribed n-gon, an upper bound that falls toward π. Widening the sides (Auto-grow) narrows [low, high] around π.",
+  eqSpec: { argNames: ["n", "params"], mustReturn: true },
+  params: [
+    { key: "n",     label: "Sides n",     min: 3,  max: 200, step: 1, value: 8 },
+    { key: "grow",  label: "Auto-grow n", min: 0,  max: 1,   step: 1, value: 1 },
+  ],
+  defaultCode:
+`// One side of a regular n-gon inscribed in a unit circle.
+// perimeter = n·side, and π = perimeter/2 → π_est = n·side/2 (below π).
+return 2 * Math.sin(Math.PI / n);
+
+// try me — circumscribed n-gon, an upper bound that falls toward π:
+// return 2 * Math.tan(Math.PI / n);`,
+  P: {}, nNow: 8, low: 0, high: 6, estimates: [],
+  init() { this.nNow = Math.max(3, this.P.n); this.low = 0; this.high = 6; this.estimates.length = 0; },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("reset polygon"); },
+  measures() {
+    return [
+      ["n", this.nNow],
+      ["low", this.low.toFixed(5)],
+      ["high", this.high.toFixed(5)],
+      ["width", (this.high - this.low).toExponential(2)],
+    ];
+  },
+  series() { return [["π est", this.estimates.slice(-1000)]]; },
+
+  step(dt) {
+    if (this.P.grow) { this.nNow += 1; if (this.nNow > 300) this.nNow = 3; }
+    const n = this.nNow, P = this.P;
+    let side = 2 * Math.sin(Math.PI / n);
+    try { side = this.eq(n, P); } catch (e) { side = 2 * Math.sin(Math.PI / n); eqRuntimeError(e); }
+    if (!isFinite(side) || side <= 0) side = 2 * Math.sin(Math.PI / n);
+    const est = n * side / 2;
+    if (est <= Math.PI && est > this.low) this.low = est;
+    if (est >= Math.PI && est < this.high) this.high = est;
+    pushSample(est);
+    this.estimates.push(est);
+    if (this.estimates.length > 2000) this.estimates.shift();
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const cx = W / 2, cy = H / 2, R = 0.4 * Math.min(W, H);
+    ctx.strokeStyle = "rgba(160,200,255,.25)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.stroke();
+    // polygon vertices (inscribed n-gon from the editable side equation)
+    const n = this.nNow;
+    ctx.fillStyle = "#f85149";
+    ctx.beginPath();
+    const a0 = -Math.PI / 2;
+    for (let i = 0; i <= n; i++) {
+      const a = a0 + 2 * Math.PI * i / n;
+      const vx = cx + R * Math.cos(a), vy = cy + R * Math.sin(a);
+      ctx.lineTo(vx, vy);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = "rgba(248,81,73,.9)"; ctx.lineWidth = 2.5; ctx.stroke();
+    // vertices
+    for (let i = 0; i < n; i++) {
+      const a = a0 + 2 * Math.PI * i / n;
+      ctx.beginPath(); ctx.arc(cx + R * Math.cos(a), cy + R * Math.sin(a), 3, 0, 7); ctx.fill();
+    }
+    // estimator banner with narrowing bounds
+    ctx.fillStyle = "rgba(9,12,16,.8)";
+    ctx.fillRect(10, H - 44, Math.min(420, W - 20), 34);
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`n=${n}  low=${this.low.toFixed(5)}  π=${Math.PI.toFixed(5)}  high=${this.high.toFixed(5)}`, 14, H - 20);
+  },
+
+  xRange() { return [3.0, 3.3]; },
+  presets: [
+    { name: "Inscribed (below)", code: "return 2 * Math.sin(Math.PI / n);\n\n// lower bound: climbs toward π from below", params: { n: 8, grow: 1 } },
+    { name: "Circumscribed (above)", code: "return 2 * Math.tan(Math.PI / n);\n\n// upper bound: falls toward π from above", params: { n: 8, grow: 1 } },
+  ],
+};
+
+// ==========================================================================
+//  DOUBLE PENDULUM — chaotic coupled rods
+// ==========================================================================
+const doublePendulum = {
+  id: "doublePendulum", label: "Double Pendulum",
+  category: "Chaos",
+  hint: "Two rods, two joints — the archetypal chaotic toy. Tiny changes in the initial angle become wildly different swings within seconds. The red trace is the outer bob's path; the editable torque law adds to the exact equations of motion.",
+  histLabel: "ω₂ (rad/s, outer bob)",
+  eqName: "torque(θ, ω, t, params)",
+  eqSig: "θ: angle (rad) · ω: angular velocity · t: sim time · returns: extra angular acceleration",
+  eqDesc: "The full double-pendulum equations (equal point masses, rods of length L) run on top of a user torque law. Default is linear damping −c·ω; edit to inject a drive (e.g. 20·cos(3t)) or a nonlinear friction. Energy is monitored live so you can see the chaos dissipate or grow.",
+  eqSpec: { argNames: ["theta", "omega", "t", "params"], mustReturn: true },
+  params: [
+    { key: "L", label: "Rod length", min: 50, max: 220, step: 5, value: 125 },
+    { key: "c", label: "Damping c",  min: 0, max: 2,   step: 0.02, value: 0.08 },
+    { key: "g", label: "Gravity g",  min: 1, max: 20,  step: 0.5, value: 9.81 },
+  ],
+  defaultCode:
+`// Extra angular acceleration applied to BOTH bobs, added on top of the
+// exact double-pendulum dynamics. Linear damping keeps swings alive.
+return -params.c * omega;
+
+// try me — sinusoidal drive pumps energy into the swing:
+// return 6 * Math.cos(3 * t) * omega * omega;`,
+  P: {}, th1: 1.2, th2: 1.2, w1: 0, w2: 0, t: 0, trace: [],
+  init() { this.th1 = this.th2 = 1.05; this.w1 = this.w2 = 0; this.t = 0; this.trace.length = 0; },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("double pendulum released"); },
+  measures() {
+    const E = this.energy();
+    return [["t", this.t.toFixed(2) + "s"], ["θ₁", (this.th1 * 180 / Math.PI).toFixed(0) + "°"], ["ω₂", this.w2.toFixed(2)], ["E", isFinite(E) ? E.toFixed(2) : "∞"]];
+  },
+  energy() {
+    const L = this.P.L, g = this.P.g, d = this.th1 - this.th2;
+    const KE = .5 * L * L * (this.w1 * this.w1 + 2 * this.w1 * this.w2 * Math.cos(d) + 2 * this.w2 * this.w2);
+    const PE = -(2 + 1) * g * L * Math.cos(this.th1) - g * L * Math.cos(this.th2);
+    return KE + PE;
+  },
+  step(dt) {
+    const P = this.P, L = P.L, g = P.g;
+    const m1 = 1, m2 = 1;
+    const deriv = (s) => {
+      const t1 = s[0], t2 = s[2], o1 = s[1], o2 = s[3];
+      const D = t1 - t2, den = 2 - Math.cos(2 * D);
+      let e1 = 0, e2 = 0;
+      try { e1 = this.eq(t1, o1, this.t, P); e2 = this.eq(t2, o2, this.t, P); } catch (e) { eqRuntimeError(e); }
+      if (!isFinite(e1)) e1 = 0; if (!isFinite(e2)) e2 = 0;
+      const a1 = (-g * (2 * m1 + m2) * Math.sin(t1) - m2 * g * Math.sin(t1 - 2 * t2) - 2 * Math.sin(D) * m2 * (o2 * o2 * L + o1 * o1 * L * Math.cos(D))) / (L * den) + e1;
+      const a2 = (2 * Math.sin(D) * (o1 * o1 * L * (m1 + m2) + g * (m1 + m2) * Math.cos(t1) + o2 * o2 * L * m2 * Math.cos(D))) / (L * den) + e2;
+      return [o1, a1, o2, a2];
+    };
+    // RK4
+    const k1 = deriv([this.th1, this.w1, this.th2, this.w2]);
+    const k2 = deriv([this.th1 + dt / 2 * k1[0], this.w1 + dt / 2 * k1[1], this.th2 + dt / 2 * k1[2], this.w2 + dt / 2 * k1[3]]);
+    const k3 = deriv([this.th1 + dt / 2 * k2[0], this.w1 + dt / 2 * k2[1], this.th2 + dt / 2 * k2[2], this.w2 + dt / 2 * k2[3]]);
+    const k4 = deriv([this.th1 + dt * k3[0], this.w1 + dt * k3[1], this.th2 + dt * k3[2], this.w2 + dt * k3[3]]);
+    this.th1 += dt / 6 * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+    this.w1  += dt / 6 * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+    this.th2 += dt / 6 * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]);
+    this.w2  += dt / 6 * (k1[3] + 2 * k2[3] + 2 * k3[3] + k4[3]);
+    this.t += dt;
+    const bx = W / 2 + L * Math.sin(this.th1), by = H * 0.26 + L * Math.cos(this.th1);
+    const cxx = bx + L * Math.sin(this.th2), cyy = by + L * Math.cos(this.th2);
+    this.trace.push(cxx); this.trace.push(cyy);
+    if (this.trace.length > 2200) this.trace.splice(0, this.trace.length - 2200);
+    pushSample(this.w2);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const L = this.P.L, px = W / 2, py = H * 0.26;
+    const bx = px + L * Math.sin(this.th1), by = py + L * Math.cos(this.th1);
+    const cx = bx + L * Math.sin(this.th2), cy = by + L * Math.cos(this.th2);
+    const tl = this.trace.length;
+    for (let i = 0; i + 1 < tl; i += 2) {
+      ctx.fillStyle = "rgba(248,81,73,.25)"; ctx.beginPath(); ctx.arc(this.trace[i], this.trace[i + 1], 1.4, 0, 7); ctx.fill();
+    }
+    ctx.strokeStyle = "#e6edf3"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(bx, by); ctx.lineTo(cx, cy);
+    ctx.lineCap = "round"; ctx.stroke();
+    ctx.fillStyle = "#58a6ff"; ctx.beginPath(); ctx.arc(px, py, 4, 0, 7); ctx.fill();
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(bx, by, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = "#3fb950"; ctx.beginPath(); ctx.arc(cx, cy, 9, 0, 7); ctx.fill();
+  },
+  xRange() { return [-5, 5]; },
+  presets: [
+    { name: "Ballistic drop", params: { th1: 0, th2: 0 } },
+    { name: "Big swing", params: { th1: 3.0, th2: 3.0 } },
+  ],
+};
+
+// ==========================================================================
+//  PENDULUM WAVE — N pendulums, period-tuned lengths
+// ==========================================================================
+const pendulumWave = {
+  id: "pendulumWave", label: "Pendulum Wave",
+  category: "Waves",
+  hint: "A row of pendulums whose lengths are chosen so their periods step uniformly. Released together, they peel into a travelling wave, fold back, and periodically re-form in a straight line — the classic physics-demo illusion.",
+  histLabel: "mean bob angle (rad)",
+  eqName: "lengthFactor(i, n, params)",
+  eqSig: "i: pendulum index 0..n−1 · n: count · returns: multiplier for the base length L₀",
+  eqDesc: "The k-th pendulum gets length L₀·lengthFactor(k). The classic relation (1 + k/n)⁻² makes period Tₖ = T₀·(1+k/n) so all pendulums re-phase together after one T₀ cycle. Edit to a ramp and watch a travelling wave form instead.",
+  eqSpec: { argNames: ["i", "n", "params"], mustReturn: true },
+  params: [
+    { key: "n",   label: "Pendulums", min: 5,  max: 24, step: 1, value: 14 },
+    { key: "L0",  label: "Base length", min: 100, max: 340, step: 10, value: 250 },
+    { key: "amp", label: "Amplitude °", min: 5,  max: 50, step: 1, value: 30 },
+    { key: "g",   label: "Gravity g",  min: 1,  max: 20, step: 0.5, value: 9.81 },
+  ],
+  defaultCode:
+`// Length factor for pendulum k — classic pendulum-wave relation:
+// T_k = T_0 · (1 + k/n)  →  L_k = L_0 / (1 + k/n)²
+return Math.pow(1 + i / n, -2);
+
+// try me — linear ramp makes a clean travelling wave:
+// return 1 - 0.45 * i / n;`,
+  P: {}, angs: null, vel: null, t: 0,
+  lengthFactor(i, n, P) {
+    let f = Math.pow(1 + i / n, -2);
+    try { f = this.eq(i, n, P); } catch (e) { eqRuntimeError(e); }
+    if (!isFinite(f) || f <= 0) f = Math.pow(1 + i / n, -2);
+    return f;
+  },
+  init() {
+    const n = Math.max(4, Math.floor(this.P.n));
+    this.angs = new Float64Array(n); this.vel = new Float64Array(n);
+    const amp = this.P.amp * Math.PI / 180;
+    for (let i = 0; i < n; i++) { this.angs[i] = amp; this.vel[i] = 0; }
+    this.t = 0;
+  },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("pendulum wave released"); },
+  measures() {
+    return [["n", this.angs.length], ["amp", (this.P.amp) + "°"], ["re-phase T", this.rephaseT().toFixed(2) + "s"]];
+  },
+  rephaseT() { return 2 * Math.PI * Math.sqrt(this.P.L0 / this.P.g); },
+  step(dt) {
+    const n = this.angs.length, P = this.P;
+    this.t += dt;
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const L = P.L0 * this.lengthFactor(i, n, P);
+      this.vel[i] += (-(P.g / L) * Math.sin(this.angs[i])) * dt;
+      this.angs[i] += this.vel[i] * dt;
+      sum += this.angs[i];
+    }
+    pushSample(sum / n);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const n = this.angs.length, P = this.P;
+    const scale = Math.min(0.8, (H * 0.8) / P.L0);
+    const barY = Math.max(30, H * 0.14);
+    ctx.strokeStyle = "#e6edf3"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(10, barY); ctx.lineTo(W - 10, barY); ctx.stroke();
+    const stepX = Math.min((W - 40) / n, 46);
+    const x0 = (W - stepX * (n - 1)) / 2;
+    for (let i = 0; i < n; i++) {
+      const L = P.L0 * this.lengthFactor(i, n, P) * scale;
+      const x = x0 + i * stepX;
+      const ex = x + L * Math.sin(this.angs[i]), ey = barY + L * Math.cos(this.angs[i]);
+      ctx.strokeStyle = i % 2 ? "#58a6ff" : "#a5d6ff";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(x, barY); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.fillStyle = i % 2 ? "#58a6ff" : "#f85149";
+      ctx.beginPath(); ctx.arc(ex, ey, i % 2 ? 4.5 : 3.5, 0, 7); ctx.fill();
+    }
+  },
+  xRange() { return [-1, 1]; },
+  presets: [
+    { name: "Classic re-phase", code: "return Math.pow(1 + i / n, -2);\n\n// T_k = T_0·(1+k/n)", params: { n: 14, L0: 250 } },
+    { name: "Travelling ramp", code: "return 1 - 0.45 * i / n;\n\n// linear ramp → travelling wave", params: { n: 18, L0: 250 } },
+  ],
+};
+
+// ==========================================================================
+//  VIBRATING STRING — 1D wave equation (explicit finite difference)
+// ==========================================================================
+const vibratingString = {
+  id: "vibratingString", label: "Wave Equation (string)",
+  category: "Waves",
+  hint: "An explicit finite-difference solve of uₜₜ = c²uₓₓ on a fixed string. The editable equation is the discrete Laplacian — edit the coupling (or add nonlinear terms) and watch travelling pulses, standing modes and shocks. Crank the wave speed up past the CFL limit to see the scheme blow up.",
+  histLabel: "mid-string height u",
+  eqName: "a(u, u_l, u_r, params)",
+  eqSig: "u: height here · u_l, u_r: heights of left/right neighbours · returns: acceleration",
+  eqDesc: "The classical wave equation in explicit form: the acceleration at a point is a coupling constant times the discrete Laplacian u_r+u_l−2u. Fixed ends, leapfrog time integration. Nonlinear edits (e.g. multiplying by 1+3u²) turn it into a kink-scattering problem.",
+  eqSpec: { argNames: ["u", "u_l", "u_r", "params"], mustReturn: true },
+  params: [
+    { key: "n",   label: "Segments", min: 60,  max: 600, step: 20, value: 240 },
+    { key: "c2",  label: "c² (coupling)", min: 100, max: 50000, step: 100, value: 2600 },
+    { key: "damp", label: "Damping", min: 0,   max: 0.5, step: 0.01, value: 0.006 },
+  ],
+  defaultCode:
+`// Discrete Laplacian scaled by c²  →  u_tt = c² u_xx.
+// Stable while c² < ~(n/dt)² ≈ 14,400 (CFL). Push it past and the
+// explicit scheme explodes exponentially — the classic teaching moment.
+return params.c2 * (u_r + u_l - 2 * u);
+
+// try me — kink-scattering cubic nonlinearity:
+// return params.c2 * (u_r + u_l - 2*u) * (1 + 3 * u * u);`,
+  P: {}, u: null, v: null, t: 0,
+  init() {
+    const n = Math.max(40, Math.floor(this.P.n));
+    this.u = new Float64Array(n); this.v = new Float64Array(n);
+    const L = n - 1;
+    for (let i = 1; i < L; i++) {
+      const x = i / L;
+      this.u[i] = 1.6 * Math.exp(-Math.pow((x - 0.35) / 0.09, 2)) + 0.7 * Math.exp(-Math.pow((x - 0.7) / 0.06, 2));
+    }
+    this.t = 0;
+  },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("string re-plucked"); },
+  measures() {
+    let mx = 0, E = 0;
+    for (let i = 0; i < this.u.length; i++) { mx = Math.max(mx, Math.abs(this.u[i])); E += this.v[i] * this.v[i]; }
+    return [["t", this.t.toFixed(2) + "s"], ["max|u|", mx.toFixed(3)], ["KE", E.toFixed(2)], ["n", this.u.length]];
+  },
+  step(dt) {
+    const n = this.u.length, P = this.P, c2 = P.c2, dp = P.damp;
+    const u = this.u, v = this.v;
+    for (let i = 1; i < n - 1; i++) u[i] += v[i] * dt;   // drift (stable ordering)
+    for (let i = 1; i < n - 1; i++) {
+      let a = c2 * (u[i + 1] + u[i - 1] - 2 * u[i]);
+      try { a = this.eq(u[i], u[i - 1], u[i + 1], P); } catch (e) { eqRuntimeError(e); }
+      if (!isFinite(a)) a = 0;
+      v[i] = (v[i] + a * dt) * (1 - dp);
+    }
+    u[0] = u[n - 1] = 0; v[0] = v[n - 1] = 0;
+    this.t += dt;
+    pushSample(u[Math.floor(n / 2)]);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const u = this.u, n = u.length;
+    let mx = 0.0001;
+    for (let i = 0; i < n; i++) mx = Math.max(mx, Math.abs(u[i]));
+    mx *= 1.1;
+    const cy = H * 0.52, px = 24, pw = W - 2 * px;
+    ctx.strokeStyle = "rgba(160,200,255,.25)";
+    ctx.beginPath(); ctx.moveTo(px, cy); ctx.lineTo(W - px, cy); ctx.stroke();
+    ctx.strokeStyle = "#f85149"; ctx.lineWidth = 2.5; ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = px + i / (n - 1) * pw, y = cy - u[i] / mx * (H * 0.38);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`c² = ${this.P.c2}   fixed ends`, px, 18);
+  },
+  xRange() { return [-2.5, 2.5]; },
+  presets: [
+    { name: "Linear string", code: "return params.c2 * (u_r + u_l - 2 * u);\n\n// plain wave equation", params: { c2: 2600 } },
+    { name: "Nonlinear medium", code: "return params.c2 * (u_r + u_l - 2*u) * (1 + 3 * u * u);\n\n// kink-scattering medium", params: { c2: 1800 } },
+  ],
+};
+
+// ==========================================================================
+//  FOURIER HARMONICS — build any periodic wave from sines
+// ==========================================================================
+const fourier = {
+  id: "fourier", label: "Fourier Harmonics",
+  category: "Mathematical",
+  hint: "Every periodic wave is a sum of sine harmonics with amplitudes chosen by the editable harmonic law. The default builds a square wave (odd harmonics, 1/k). Add more harmonics and watch the corners sharpen — and the Gibbs overshoot ring.",
+  histLabel: "wave amplitude samples",
+  eqName: "harmonic(k, params)",
+  eqSig: "k: harmonic index (1-based) · returns: amplitude of the k-th sine harmonic",
+  eqDesc: "The wave is Σₖ harmonic(k)·sin(2πk·f·t). The classic square-wave amplitude is 4/(πk) on odd k, sawtooth is 2/(πk)·(±1), triangle is 8/π²·(±1)/k². The colored fainter sine curves are the individual harmonics; the bright curve is their sum.",
+  eqSpec: { argNames: ["k", "params"], mustReturn: true },
+  params: [
+    { key: "harm", label: "Harmonics", min: 1,   max: 120, step: 1, value: 12 },
+    { key: "f",    label: "Freq (Hz)", min: 0.3, max: 6,   step: 0.1, value: 2 },
+    { key: "n",    label: "Samples",  min: 120, max: 900, step: 10, value: 420 },
+  ],
+  defaultCode:
+`// Square wave: only ODD harmonics, amplitude ∝ 1/k.
+// More harmonics → sharper corners, with the Gibbs ~9% overshoot.
+return (k % 2) ? 4 / (Math.PI * k) : 0;
+
+// try me — sawtooth:
+// return 2 / (Math.PI * k) * (k % 2 ? 1 : -1);
+
+// try me — triangle:
+// return 8 / (Math.PI * Math.PI) * (k % 2 ? 1 : -1) / (k * k);`,
+  P: {}, t: 0, wave: [], amps: [],
+  init() { this.t = 0; this.wave.length = 0; this.amps.length = 0; },
+  layout() {},
+  onParam() {},
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("waveform regenerated"); },
+  measures() {
+    let peak = 0, rms = 0;
+    for (const w of this.wave) { peak = Math.max(peak, Math.abs(w)); rms += w * w; }
+    rms = Math.sqrt(rms / Math.max(1, this.wave.length));
+    return [["harmonics", this.P.harm], ["f", this.P.f.toFixed(1) + "Hz"], ["peak", peak.toFixed(3)], ["rms", rms.toFixed(3)]];
+  },
+  series() { return [["wave u", this.wave]]; },
+  step(dt) {
+    this.t += dt * this.P.f;
+    const n = Math.floor(this.P.n), K = Math.max(1, Math.floor(this.P.harm));
+    const amps = new Array(K + 1);
+    for (let k = 1; k <= K; k++) {
+      let a = 0;
+      try { a = this.eq(k, this.P); } catch (e) { a = 0; eqRuntimeError(e); }
+      if (!isFinite(a)) a = 0;
+      amps[k] = a;
+    }
+    this.amps = amps;
+    const frac = this.t % 1;
+    this.wave.length = n;
+    for (let i = 0; i < n; i++) {
+      const ph = 2 * Math.PI * (i / this.P.n + frac);
+      let v = 0;
+      for (let k = 1; k <= K; k++) v += amps[k] * Math.sin(k * ph);
+      this.wave[i] = v;
+    }
+    pushSample(this.wave[Math.floor(n * frac + 0.5) % n]);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const n = this.wave.length, K = this.amps.length - 1;
+    const cx = 26, pw = W - 2 * cx, cy = H * 0.55, amp = H * 0.34;
+    const px = i => cx + i / (n - 1) * pw, pm = v => cy - v / Math.max(1.001, this.maxAmp()) * amp;
+    const xam = this.maxAmp();
+    const toPx = v => cy - v / Math.max(1.001, xam) * amp;
+    // individual harmonics (faint)
+    for (let k = 1; k <= K && k <= 16; k++) {
+      if (!this.amps[k]) continue;
+      ctx.strokeStyle = "rgba(88,166,255,.16)"; ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const v = this.amps[k] * Math.sin(2 * Math.PI * k * (i / n + this.t % 1));
+        if (i === 0) ctx.moveTo(px(i), toPx(v)); else ctx.lineTo(px(i), toPx(v));
+      }
+      ctx.stroke();
+    }
+    // sum
+    ctx.strokeStyle = "#f85149"; ctx.lineWidth = 2.4; ctx.beginPath();
+    for (let i = 0; i < n; i++) { if (i === 0) ctx.moveTo(px(i), toPx(this.wave[i])); else ctx.lineTo(px(i), toPx(this.wave[i])); }
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(160,200,255,.3)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(W - cx, cy); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`Σ ${K} harmonics`, cx, 18);
+  },
+  maxAmp() { let m = 0; for (const w of this.wave) m = Math.max(m, Math.abs(w)); return m || 1; },
+  xRange() { return [-1.6, 1.6]; },
+  presets: [
+    { name: "Square wave", code: "return (k % 2) ? 4 / (Math.PI * k) : 0;\n\n// odd harmonics, amplitude ∝ 1/k", params: { harm: 24 } },
+    { name: "Sawtooth", code: "return 2 / (Math.PI * k) * (k % 2 ? 1 : -1);\n\n// all harmonics, alternating sign", params: { harm: 24 } },
+    { name: "Triangle", code: "return 8 / (Math.PI * Math.PI) * (k % 2 ? 1 : -1) / (k * k);\n\n// odd harmonics, ∝ 1/k²", params: { harm: 24 } },
+  ],
+};
+
+// ==========================================================================
+//  SINAI BILLIARD — point particle + circular obstacle (chaotic)
+// ==========================================================================
+const billiard = {
+  id: "billiard", label: "Sinai Billiard",
+  category: "Chaos",
+  hint: "A single point particle bounces perfectly elastically inside a square, around a central circular obstacle. Two straight reflections between obstacles — and orbits diverge exponentially. The histogram records the velocity angle: chaotic ergodicity spreads it uniformly.",
+  histLabel: "velocity angle θ (ergodicity)",
+  eqName: "speed(v, params)",
+  eqSig: "v: speed before the bounce · returns: multiplier for post-bounce speed (1 = elastic)",
+  eqDesc: "The only un-elastic freedom is the per-bounce speed multiplier (restitution). Set 1 for the fully conservative chaotic billiard; drop it to cool the particle to a stop; edge it above 1 and the billiard self-accelerates. The trail fades so you see the ergodic exploration.",
+  eqSpec: { argNames: ["v", "params"], mustReturn: true },
+  params: [
+    { key: "r", label: "Obstacle r",  min: 0.05, max: 0.45, step: 0.01, value: 0.18 },
+    { key: "u", label: "Launch speed", min: 20,  max: 160, step: 5,  value: 90 },
+  ],
+  defaultCode:
+`// Speed multiplier applied at every wall/obstacle bounce.
+// 1 = perfectly elastic → energy conserved, chaos is purely geometric.
+return 1;
+
+// try me — slightly lossy walls cool the particle down:
+// return 0.985;
+
+// try me — gain: energy pours in until the particle escapes the box:
+// return 1.008;`,
+  P: {}, x: 0, y: 0, vx: 0, vy: 0, trail: [], bounces: 0,
+  init() {
+    const u = this.P.u;
+    this.x = 0.16; this.y = 0.5;
+    this.vx = u * Math.cos(-0.6); this.vy = u * Math.sin(-0.6);
+    this.trail.length = 0; this.bounces = 0;
+  },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("billiard re-launched"); },
+  measures() {
+    return [["speed", Math.hypot(this.vx, this.vy).toFixed(1)], ["obstacle r", this.P.r], ["bounces", this.bounces]];
+  },
+  step(dt) {
+    const P = this.P, rate = this.speedMult();
+    this.x += this.vx * dt; this.y += this.vy * dt;
+    const bx = this.x < 0 || this.x > 1, by = this.y < 0 || this.y > 1;
+    if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx); this.bounce(); }
+    if (this.x > 1) { this.x = 1; this.vx = -Math.abs(this.vx); this.bounce(); }
+    if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy); this.bounce(); }
+    if (this.y > 1) { this.y = 1; this.vy = -Math.abs(this.vy); this.bounce(); }
+    const r = P.r, dx = this.x - 0.5, dy = this.y - 0.5, dd = Math.hypot(dx, dy);
+    if (dd < r) {
+      const nx = dx / dd, ny = dy / dd;
+      const vdot = this.vx * nx + this.vy * ny;
+      this.vx -= 2 * vdot * nx; this.vy -= 2 * vdot * ny;
+      this.x = 0.5 + nx * r; this.y = 0.5 + ny * r;
+      this.bounce();
+    }
+    this.trail.push(this.x); this.trail.push(this.y);
+    if (this.trail.length > 700) this.trail.splice(0, this.trail.length - 700);
+    pushSample(Math.atan2(this.vy, this.vx));
+  },
+  speedMult() {
+    let m = 1;
+    try { m = this.eq(Math.hypot(this.vx, this.vy), this.P); } catch (e) { m = 1; eqRuntimeError(e); }
+    if (!isFinite(m) || m <= 0) m = 1;
+    return m;
+  },
+  bounce() {
+    const m = this.speedMult();
+    const s = Math.hypot(this.vx, this.vy);
+    if (s > 0) { this.vx = this.vx / s * s * m; this.vy = this.vy / s * s * m; }
+    this.bounces++;
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const m = Math.min(W, H) * 0.86;
+    const ox = (W - m) / 2, oy = (H - m) / 2;
+    ctx.strokeStyle = "rgba(88,166,255,.6)"; ctx.lineWidth = 2;
+    ctx.strokeRect(ox, oy, m, m);
+    const tl = this.trail.length;
+    for (let i = 0; i + 1 < tl; i += 2) {
+      ctx.fillStyle = "rgba(88,166,255,.22)"; ctx.beginPath();
+      ctx.arc(ox + this.trail[i] * m, oy + this.trail[i + 1] * m, 1.2, 0, 7); ctx.fill();
+    }
+    ctx.fillStyle = "#090c10"; ctx.strokeStyle = "rgba(248,81,73,.8)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(ox + 0.5 * m, oy + 0.5 * m, this.P.r * m, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(ox + this.x * m, oy + this.y * m, 3, 0, 7); ctx.fill();
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`speed ${Math.hypot(this.vx, this.vy).toFixed(1)}   bounces ${this.bounces}`, 12, 18);
+  },
+  xRange() { return [-Math.PI, Math.PI]; },
+  presets: [
+    { name: "Elastic (chaos)", code: "return 1;\n\n// perfectly elastic billiard", params: { r: 0.18 } },
+    { name: "Lossy walls", code: "return 0.985;\n\n// cools down to a crawl", params: { r: 0.18 } },
+    { name: "Gaining energy", code: "return 1.008;\n\n// accelerates until it leaves the box", params: { r: 0.18 } },
+  ],
+};
+
+// ==========================================================================
+//  DUFFING OSCILLATOR — driven soft spring, route to chaos
+// ==========================================================================
+const duffing = {
+  id: "duffing", label: "Duffing Oscillator",
+  category: "Chaos",
+  hint: "ẍ + δẋ + αx + βx³ = γ·cos(ωt) — the nonlinear-oscillator workhorse. Tune γ/ω through the period-doubling cascade into chaos. Green dots are the Poincaré section, sampled once per drive cycle: fixed points → period-2 → 4 → … → strange attractor.",
+  histLabel: "Poincaré section x (once per drive cycle)",
+  eqName: "force(x, v, t, params)",
+  eqSig: "x: position · v: velocity · t: time · returns: acceleration",
+  eqDesc: "α selects a soft (α<0, double-well) or stiff (α>0) spring; β is the cubic correction; δ damping; γ drive amplitude; ω drive frequency. The phase portrait draws (x,v), with green Poincaré markers every drive period T=2π/ω.",
+  eqSpec: { argNames: ["x", "v", "t", "params"], mustReturn: true },
+  params: [
+    { key: "a", label: "α (linear)", min: -2, max: 2,   step: 0.02, value: -0.5 },
+    { key: "b", label: "β (cubic)",  min: -1, max: 1,   step: 0.02, value: 1 },
+    { key: "c", label: "δ (damp)",   min: 0,  max: 0.4, step: 0.005, value: 0.06 },
+    { key: "g", label: "γ (drive)",  min: 0,  max: 0.6, step: 0.005, value: 0.26 },
+    { key: "w", label: "ω (drive)",  min: 0.5, max: 2,  step: 0.01, value: 1.2 },
+  ],
+  defaultCode:
+`// Duffing accelerator — edit any coefficient, or replace the force entirely.
+return -params.a * x - params.b * x * x * x - params.c * v + params.g * Math.cos(params.w * t);
+// Setting γ=0 → damped double-well oscillations between ±√(α/β).`,
+  P: {}, x: 1, v: 0, t: 0, trace: [], lastCycle: 0,
+  init() { this.x = 1; this.v = 0; this.t = 0; this.trace.length = 0; this.lastCycle = 0; },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("oscillator reset"); },
+  measures() {
+    return [["x", this.x.toFixed(3)], ["v", this.v.toFixed(3)], ["γ", this.P.g.toFixed(2)], ["t", this.t.toFixed(1) + "s"]];
+  },
+  series() { return [["x", this.trace.slice(-1200).map(p => p[0])]]; },
+  step(dt) {
+    const P = this.P;
+    const f = (x, v, t) => {
+      let a = 0;
+      try { a = this.eq(x, v, t, P); } catch (e) { a = 0; eqRuntimeError(e); }
+      return isFinite(a) ? a : 0;
+    };
+    // RK4: (x,v) system with x' = v, v' = f(x,v,t)
+    const k1v = f(this.x, this.v, this.t);
+    const k2v = f(this.x + dt / 2 * this.v, this.v + dt / 2 * k1v, this.t + dt / 2);
+    const k3v = f(this.x + dt / 2 * this.v + dt * dt / 4 * k1v, this.v + dt / 2 * k2v, this.t + dt / 2);
+    const k4v = f(this.x + dt * this.v + dt * dt / 2 * k2v, this.v + dt * k3v, this.t + dt);
+    this.x += dt * this.v + dt * dt / 6 * (k1v + k2v + k3v);
+    this.v += dt / 6 * (k1v + 2 * k2v + 2 * k3v + k4v);
+    this.t += dt;
+    if (!isFinite(this.x)) this.x = 0; if (!isFinite(this.v)) this.v = 0;
+    this.trace.push([this.x, this.v]);
+    if (this.trace.length > 1400) this.trace.splice(0, this.trace.length - 1400);
+    const T = 2 * Math.PI / P.w;
+    const cyc = Math.floor(this.t / T);
+    if (cyc !== this.lastCycle) { this.lastCycle = cyc; if (isFinite(this.x)) pushSample(this.x); }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const cx = W / 2, cy = H / 2, sc = Math.min(W, H) * 0.11;
+    ctx.strokeStyle = "rgba(160,200,255,.3)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+    const tl = this.trace.length;
+    if (tl > 1) {
+      ctx.strokeStyle = "rgba(88,166,255,.75)"; ctx.lineWidth = 1.4; ctx.beginPath();
+      for (let i = Math.max(0, tl - 900); i < tl; i++) {
+        const X = cx + this.trace[i][0] * sc, Y = cy - this.trace[i][1] * sc;
+        if (i === Math.max(0, tl - 900)) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+      }
+      ctx.stroke();
+    }
+    // Poincaré section markers (drive period)
+    const T = 2 * Math.PI / this.P.w;
+    const ph = this.t / T;
+    for (let i = 1; i <= Math.min(120, Math.floor(ph)); i++) {
+      const idx = Math.max(0, Math.min(tl - 1, Math.floor((ph - i) * T / 0.008)));
+      if (this.trace[idx]) {
+        ctx.fillStyle = "#3fb950"; ctx.beginPath();
+        ctx.arc(cx + this.trace[idx][0] * sc, cy - this.trace[idx][1] * sc, 2.2, 0, 7); ctx.fill();
+      }
+    }
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(cx + this.x * sc, cy - this.v * sc, 3.4, 0, 7); ctx.fill();
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`γ=${this.P.g.toFixed(2)} ω=${this.P.w.toFixed(2)}`, 12, 18);
+  },
+  xRange() { return [-2.6, 2.6]; },
+  presets: [
+    { name: "Damped double-well", params: { a: -0.5, b: 1, c: 0.06, g: 0.1, w: 1 } },
+    { name: "Period-2", params: { a: -0.5, b: 1, c: 0.06, g: 0.24, w: 1.2 } },
+    { name: "Chaos", params: { a: -0.5, b: 1, c: 0.06, g: 0.32, w: 1.2 } },
+  ],
+};
+
+// ==========================================================================
+//  IDEAL GAS — 2D molecules, elastic collisions, Maxwell speeds
+// ==========================================================================
+const idealGas = {
+  id: "idealGas", label: "Ideal Gas (2D)",
+  category: "Statistical",
+  hint: "Hard-disc molecules in a square box with elastic wall bounces. When two discs touch, the editable interaction law delivers a repulsive jump. Whatever the interaction, the speed distribution relaxes to the Maxwell–Boltzmann curve — robust to microscopic details.",
+  histLabel: "molecule speed (Maxwell–Boltzmann)",
+  eqName: "interact(d, params)",
+  eqSig: "d: centre-to-centre distance of a touching pair · returns: repulsive kick strength",
+  eqDesc: "Velocities are truly continuous: no lattice. Pair collisions exchange the normal-velocity component (equal masses) plus an extra impulse from the editable law. The smooth green curve in the histogram is the Maxwell–Boltzmann prediction from the mean energy.",
+  eqSpec: { argNames: ["d", "params"], mustReturn: true },
+  params: [
+    { key: "n", label: "Molecules", min: 10,  max: 220, step: 10, value: 90 },
+    { key: "T", label: "Init temp",  min: 0.4, max: 4,   step: 0.05, value: 1.6 },
+    { key: "s", label: "Size",       min: 2,   max: 10,  step: 1, value: 5 },
+  ],
+  defaultCode:
+`// Repulsive impulse between two touching discs (d = separation).
+// Larger values → stiffer gas. Login(ish) falloff varies the effective cross-section.
+return 46 / (d * d);
+
+// try me — soft long-range:
+// return 60 / (d * d * d);`,
+  P: {}, ms: [], colls: 0, box: 1,
+  init() {
+    const n = Math.max(6, Math.floor(this.P.n)), T = this.P.T;
+    const s = this.P.s, r = s / 2;
+    this.box = Math.max(1, Math.sqrt(n) * s * 1.8);
+    this.ms.length = 0; this.colls = 0;
+    let guard = 0;
+    while (this.ms.length < n && guard++ < 8000) {
+      const m = { x: r + rng() * (this.box - 2 * r), y: r + rng() * (this.box - 2 * r), vx: 0, vy: 0 };
+      let ok = true;
+      for (const o of this.ms) if (Math.hypot(o.x - m.x, o.y - m.y) < 2.1 * r) { ok = false; break; }
+      if (!ok) continue;
+      const a = rng() * 2 * Math.PI, sp = 6 * Math.sqrt(T) * (0.6 + rng() * 0.8);
+      m.vx = sp * Math.cos(a); m.vy = sp * Math.sin(a);
+      this.ms.push(m);
+    }
+  },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("gas re-heated"); },
+  measures() {
+    let sp2 = 0; for (const m of this.ms) sp2 += m.vx * m.vx + m.vy * m.vy;
+    const T = sp2 / (2 * Math.max(1, this.ms.length));
+    return [["N", this.ms.length], ["<T>", T.toFixed(1)], ["collisions", this.colls]];
+  },
+  series() { return [["T", this.ms.map(m => Math.sqrt(m.vx * m.vx + m.vy * m.vy))]]; },
+  step(dt) {
+    const ms = this.ms, r = this.P.s / 2, L = this.box;
+    for (const m of ms) { m.x += m.vx * dt; m.y += m.vy * dt; }
+    for (const m of ms) {
+      if (m.x < r) { m.x = r; m.vx = Math.abs(m.vx); }
+      if (m.x > L - r) { m.x = L - r; m.vx = -Math.abs(m.vx); }
+      if (m.y < r) { m.y = r; m.vy = Math.abs(m.vy); }
+      if (m.y > L - r) { m.y = L - r; m.vy = -Math.abs(m.vy); }
+    }
+    for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) {
+      const a = ms[i], b = ms[j];
+      const dx = b.x - a.x, dy = b.y - a.y, dd = Math.hypot(dx, dy);
+      if (dd > 0 && dd < 2 * r) {
+        const nx = dx / dd, ny = dy / dd;
+        const vr = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+        if (vr < 0) {
+          a.vx += vr * nx; a.vy += vr * ny; b.vx -= vr * nx; b.vy -= vr * ny;
+          const kick = this.interactKick(dd);
+          a.vx -= kick * nx; a.vy -= kick * ny; b.vx += kick * nx; b.vy += kick * ny;
+          const sep = 2 * r - dd + 0.001;
+          a.x -= nx * sep / 2; a.y -= ny * sep / 2; b.x += nx * sep / 2; b.y += ny * sep / 2;
+          this.colls++;
+        }
+      }
+    }
+    for (const m of ms) pushSample(Math.sqrt(m.vx * m.vx + m.vy * m.vy));
+  },
+  interactKick(dd) {
+    let k = 46 / (dd * dd);
+    try { k = this.eq(dd, this.P); } catch (e) { k = 46 / (dd * dd); eqRuntimeError(e); }
+    return isFinite(k) && k > 0 ? k * 0.002 : 0;
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const m = Math.min(W, H) * 0.86, ox = (W - m) / 2, oy = (H - m) / 2; const L = this.box;
+    ctx.strokeStyle = "rgba(88,166,255,.6)"; ctx.lineWidth = 2; ctx.strokeRect(ox, oy, m, m);
+    let sp2 = 0; for (const m0 of this.ms) sp2 += m0.vx * m0.vx + m0.vy * m0.vy;
+    const T = sp2 / (2 * Math.max(1, this.ms.length));
+    const Rpx = this.P.s / L * m;
+    for (const m0 of this.ms) {
+      const sp = Math.sqrt(m0.vx * m0.vx + m0.vy * m0.vy);
+      const h = Math.min(1, sp / (6 * Math.sqrt(T + 0.5)));
+      ctx.fillStyle = `hsl(${200 - h * 140}, 80%, ${46 + h * 20}%)`;
+      ctx.beginPath();
+      ctx.arc(ox + m0.x / L * m, oy + m0.y / L * m, Rpx, 0, 7); ctx.fill();
+    }
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`N=${this.ms.length}  <T>≈${T.toFixed(2)}  collisions=${this.colls}`, 12, 18);
+  },
+  xRange() { return [0, 30]; },
+  presets: [
+    { name: "Cold (slow)", params: { T: 0.5, n: 90 } },
+    { name: "Hot (fast)", params: { T: 3, n: 90 } },
+  ],
+};
+
+// ==========================================================================
+//  EPIDEMIC — SIR compartments on a grid
+// ==========================================================================
+const epidemic = {
+  id: "epidemic", label: "Epidemic (SIR)",
+  category: "Emergent Systems",
+  hint: "Susceptible–Infectious–Recovered on a grid. Each generation, infectious cells try to transmit to susceptible neighbours (probability from the editable rule), then recover at rate γ. R₀ ≈ β/γ decides outbreak vs flare-out; the corner curves show S/I/R over time.",
+  histLabel: "infectious count I per generation",
+  eqName: "infect(i, d, params)",
+  eqSig: "i: infected neighbours · d: local density (0..1) · returns: transmission probability [0,1]",
+  eqDesc: "Transmission probability per generation for a susceptible cell seeing i infected neighbours in an 8-neighbourhood; recovery probability per generation is γ. Edit the rule from pure β to density-limited or threshold transmission.",
+  eqSpec: { argNames: ["i", "d", "params"], mustReturn: true },
+  params: [
+    { key: "beta",  label: "β (transmit)", min: 0.03, max: 1, step: 0.02, value: 0.26 },
+    { key: "gamma", label: "γ (recover)",  min: 0.03, max: 1, step: 0.02, value: 0.08 },
+    { key: "cell",  label: "Cell size",    min: 3,   max: 9, step: 1, value: 5 },
+    { key: "gps",   label: "Gen / sec",    min: 1,   max: 24, step: 1, value: 8 },
+  ],
+  defaultCode:
+`// Probability that a susceptible cell with i infected neighbours transmits.
+// (approx: with 8 neighbours at near-max transmission this caps at ~80%)
+return Math.min(0.85, params.beta * 1.8 * i / 8 + 0.03);
+
+// try me — density-limited transmission:
+// return params.beta * (1 - d);
+// try me — pure per-contact β:
+// return params.beta;`,
+  P: {}, grid: null, gw: 0, gh: 0, img: null, cv: null, c2d: null, acc: 0, gen: 0,
+  S: 0, I: 0, R: 0, peakI: 0, curve: [], running: true,
+  init() {
+    this.gw = Math.max(10, Math.ceil(W / this.P.cell));
+    this.gh = Math.max(10, Math.ceil(H / this.P.cell));
+    const cells = this.gw * this.gh;
+    this.grid = new Uint8Array(cells);   // 0=empty,1=S,2=I,3=R
+    for (let i = 0; i < cells; i++) {
+      this.grid[i] = (rng() < 0.7) ? 1 : 0;
+    }
+    const cx = this.gw >> 1, cy = this.gh >> 1;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const idx = (cy + dy) * this.gw + (cx + dx);
+      if (idx >= 0 && idx < cells) this.grid[idx] = 2;
+    }
+    if (!this.cv) this.cv = document.createElement("canvas");
+    this.cv.width = this.gw; this.cv.height = this.gh;
+    this.c2d = this.cv.getContext("2d");
+    this.img = this.c2d.createImageData(this.gw, this.gh);
+    this.counts(true);
+    this.peakI = this.I; this.curve.length = 0; this.gen = 0; this.running = true;
+  },
+  layout() { if (this.grid) this.init(); },
+  counts(force) { let S = 0, I = 0, R = 0; for (const c of this.grid) { if (c === 1) S++; else if (c === 2) I++; else if (c === 3) R++; } this.S = S; this.I = I; this.R = R; },
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("epidemic re-seeded"); },
+  measures() {
+    const R0 = (this.P.beta * 4 / this.P.gamma).toFixed(2);
+    return [["I", this.I], ["peak I", this.peakI], ["R₀≈4β/γ", R0], ["gen", this.gen]];
+  },
+  step(dt) {
+    this.acc += dt;
+    const gen = 1 / this.P.gps, P = this.P;
+    let guardGen = 0;
+    while (this.acc >= gen && guardGen++ < 4) {
+      this.generation(P);
+      this.acc -= gen;
+    }
+  },
+  generation(P) {
+    this.counts();
+    if (this.running) {
+      const g = this.grid, gw = this.gw, gh = this.gh;
+      const next = new Uint8Array(g.length);
+      for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+        const c = g[y * gw + x];
+        if (c === 0) { continue; }
+        if (c === 2) {
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const nx = (x + dx + gw) % gw, ny = (y + dy + gh) % gh;
+            const ni = ny * gw + nx;
+            if (g[ni] === 1) {
+              let i = 0, d = 0;
+              for (let qy = -1; qy <= 1; qy++) for (let qx = -1; qx <= 1; qx++) {
+                const ci = g[((ny + qy + gh) % gh) * gw + ((nx + qx + gw) % gw)];
+                if (ci === 2) i++; if (ci !== 0) d++;
+              }
+              let p = 0; try { p = this.eq(i, d / 8, P); } catch (e) { p = 0; eqRuntimeError(e); }
+              if (isFinite(p) && rng() < clamp(p, 0, 1)) next[ni] = 2;
+            }
+          }
+          next[y * gw + x] = rng() < P.gamma ? 3 : 2;
+        } else if (c === 1) next[y * gw + x] = 1;
+        else if (c === 3) next[y * gw + x] = 3;
+      }
+      this.grid.set(next);
+      this.counts();
+      if (this.I > this.peakI) this.peakI = this.I;
+    }
+    if (this.I === 0) this.running = false;
+    else this.running = true;
+    this.curve.push(this.I);
+    if (this.curve.length > 200) this.curve.shift();
+    pushSample(this.I);
+    this.gen++;
+    if (!this.running) { setStatus("epidemic ended — drop to reseed"); }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const d = this.img.data, g = this.grid;
+    for (let i = 0; i < g.length; i++) {
+      const c = g[i], k = i * 4;
+      if (c === 0 || c === 3) { d[k] = 20; d[k + 1] = 24; d[k + 2] = 30; d[k + 3] = 255; }
+      else if (c === 1) { d[k] = 88; d[k + 1] = 166; d[k + 2] = 255; d[k + 3] = 255; }
+      else { d[k] = 248; d[k + 1] = 81; d[k + 2] = 73; d[k + 3] = 255; }
+    }
+    this.c2d.putImageData(this.img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.cv, 0, 0, W, H);
+    // corner S/I/R curve
+    const cw = 130, chh = 52, cx0 = W - cw - 10, cy0 = 10;
+    ctx.fillStyle = "rgba(9,12,16,.82)"; ctx.fillRect(cx0, cy0, cw, chh);
+    ctx.strokeStyle = "rgba(160,200,255,.3)"; ctx.strokeRect(cx0, cy0, cw, chh);
+    const total = Math.max(1, this.S + this.I + this.R);
+    for (let px = 1; px < cw; px++) {
+      const gi = Math.floor((px / cw) * (this.curve.length - 1));
+      if (gi < 0 || gi >= this.curve.length) continue;
+      const fracI = this.curve[gi] / total, fragR = this.R / total * (px / cw);
+      ctx.fillStyle = "#f85149"; ctx.fillRect(cx0 + px, cy0 + chh - fracI * chh, 1, fracI * chh);
+      ctx.fillStyle = "#3fb950"; ctx.fillRect(cx0 + px, cy0 + chh - fragR * chh, 1, fragR * chh);
+    }
+  },
+  xRange() { return [0, 1]; },
+  presets: [
+    { name: "Low R₀ (flare-out)", params: { beta: 0.08, gamma: 0.1 } },
+    { name: "Pandemic (high R₀)", params: { beta: 0.34, gamma: 0.07 } },
+  ],
+};
+
+// ==========================================================================
+//  FOREST FIRE — percolation cellular automaton
+// ==========================================================================
+const forestFire = {
+  id: "forestFire", label: "Forest Fire (percolation)",
+  category: "Emergent Systems",
+  hint: "A random forest, a spark at the centre. Fire spreads by the editable ignition rule; tree density is the key control. Above the percolation threshold the blaze crosses the whole grid; below it, it dies in a small patch. Auto re-seeds when the fire burns out.",
+  histLabel: "burned fraction per run",
+  eqName: "ignite(b, d, params)",
+  eqSig: "b: burning neighbours (0..8) · d: local tree density (0..1) · returns: ignition probability [0,1]",
+  eqDesc: "Each generation a tree with b burning neighbours catches with probability eq(b,d,params). The default (p·b) recovers classic site-percolation: critical density ≈ 59%. Edit to a threshold rule (b≥3) for a different universality class.",
+  eqSpec: { argNames: ["b", "d", "params"], mustReturn: true },
+  params: [
+    { key: "dens", label: "Tree density", min: 0.1,  max: 0.95, step: 0.01, value: 0.62 },
+    { key: "p",    label: "Burn prob",    min: 0,    max: 0.5,  step: 0.01, value: 0.4 },
+    { key: "cell", label: "Cell size",    min: 4,    max: 14,   step: 1, value: 8 },
+  ],
+  defaultCode:
+`// Chance a tree catches fire seeing b burning neighbours.
+// p·b → classic bond-site percolation; density governs the critical window.
+return Math.min(0.95, params.p * b);
+
+// try me — only a sustained front ignites:
+// return b >= 3 ? params.p : 0;`,
+  P: {}, grid: null, gw: 0, gh: 0, acc: 0, run: 0, burned: 0, img: null, cv: null, c2d: null,
+  init() {
+    this.gw = Math.max(10, Math.ceil(W / this.P.cell));
+    this.gh = Math.max(10, Math.ceil(H / this.P.cell));
+    const cells = this.gw * this.gh;
+    this.grid = new Uint8Array(cells);   // 0=empty, 1=tree, 2=burning, 3=ash
+    const d = this.P.dens;
+    for (let i = 0; i < cells; i++) this.grid[i] = rng() < d ? 1 : 0;
+    this.grid[Math.floor(this.gh / 2) * this.gw + Math.floor(this.gw / 2)] = 2;
+    if (!this.cv) this.cv = document.createElement("canvas");
+    this.cv.width = this.gw; this.cv.height = this.gh;
+    this.c2d = this.cv.getContext("2d");
+    this.img = this.c2d.createImageData(this.gw, this.gh);
+    this.burned = 0; this.acc = 0; this.run++;
+  },
+  layout() { if (this.grid) this.init(); },
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("new spark"); },
+  measures() {
+    const trees = this.treeCount();
+    return [["burned", (100 * this.burned / this.howFull()).toFixed(1) + "%"], ["trees", trees], ["density", this.P.dens], ["runs", this.run]];
+  },
+  treeCount() { let t = 0; for (const c of this.grid) if (c === 1) t++; return t; },
+  howFull() { let t = 0; for (const c of this.grid) if (c !== 0) t++; return t || 1; },
+  step(dt) {
+    this.acc += dt;
+    const gen = this.P.dens > 0.5 ? 0.09 : 0.14;   // fast enough to be interesting
+    while (this.acc >= gen && this.acc) {
+      this.acc -= gen;
+      this.generation(this.P);
+    }
+    if (this.acc < 0) this.acc = 0;
+  },
+  generation(P) {
+    const g = this.grid, gw = this.gw, gh = this.gh;
+    const next = new Uint8Array(g.length);
+    let burning = false;
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+      const c = g[y * gw + x];
+      if (c === 0) continue;
+      if (c === 2) { next[y * gw + x] = 3; this.burned++; }
+      else if (c === 1) {
+        let b = 0, d = 0;
+        for (let qy = -1; qy <= 1; qy++) for (let qx = -1; qx <= 1; qx++) {
+          const cc = g[((y + qy + gh) % gh) * gw + ((x + qx + gw) % gw)];
+          if (cc === 2) b++; if (cc !== 0) d++;
+        }
+        if (b > 0) {
+          let p = 0; try { p = this.eq(b, d / 9, P); } catch (e) { p = 0; eqRuntimeError(e); }
+          if (isFinite(p) && rng() < clamp(p, 0, 1)) { next[y * gw + x] = 2; burning = true; }
+          else next[y * gw + x] = 1;
+        } else next[y * gw + x] = 1;
+      } else next[y * gw + x] = c;
+    }
+    this.grid.set(next);
+    const burnedFrac = this.burned / this.howFull();
+    pushSample(burnedFrac);
+    if (!burning) this.init();   // fire out → reseed automatically
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const d = this.img.data, g = this.grid;
+    for (let i = 0; i < g.length; i++) {
+      const c = g[i], k = i * 4;
+      if (c === 0) { d[k] = 9; d[k + 1] = 12; d[k + 2] = 16; d[k + 3] = 255; }
+      else if (c === 1) { d[k] = 30; d[k + 1] = 115; d[k + 2] = 40; d[k + 3] = 255; }
+      else if (c === 2) { d[k] = 248; d[k + 1] = 100; d[k + 2] = 40; d[k + 3] = 255; }
+      else { d[k] = 60; d[k + 1] = 45; d[k + 2] = 34; d[k + 3] = 255; }
+    }
+    this.c2d.putImageData(this.img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.cv, 0, 0, W, H);
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`density ${this.P.dens}  burned ${(100 * this.burned / this.howFull()).toFixed(0)}%  runs ${this.run}`, 12, 18);
+  },
+  xRange() { return [0, 1]; },
+  presets: [
+    { name: "Below critical (patch)", params: { dens: 0.45, p: 0.4 } },
+    { name: "Above critical (inferno)", params: { dens: 0.72, p: 0.4 } },
+  ],
+};
+
+// ==========================================================================
+//  LANGTON'S ANT — one rule, chaotic highway
+// ==========================================================================
+const langton = {
+  id: "langton", label: "Langton's Ant",
+  category: "Emergent Systems",
+  hint: "A single ant walks a square grid: on a white cell it turns right and paints black; on black it turns left and paints white. For ~10,000 steps that trivial rule produces apparent chaos — then it marches off in a straight 'highway', forever. Edit the rule table.",
+  histLabel: "cells painted black per frame",
+  eqName: "turn(color, params)",
+  eqSig: "color: current cell (1 = black, 0 = white) · returns: -1 (turn left) or 1 (turn right)",
+  eqDesc: "The turn direction for each cell colour. The classic LR rule is chaos → highway. The mirror RL never highways; RR ('always right') spirals into a repeating 104-step attractor. Watch the histogram and coverage grow.",
+  eqSpec: { argNames: ["color", "params"], mustReturn: true },
+  params: [
+    { key: "cell",  label: "Cell size",   min: 3,  max: 10, step: 1, value: 5 },
+    { key: "steps", label: "Steps/frame", min: 1,  max: 400, step: 1, value: 20 },
+  ],
+  defaultCode:
+`// Langton's ant: turn LEFT on a black cell, RIGHT on white.
+// (direction += return value)
+return color ? -1 : 1;
+
+// try me — mirror rule RL (never highways):
+// return color ? 1 : -1;
+
+// try me — always right: spirals into a 104-step loop:
+// return 1;`,
+  P: {}, grid: null, gw: 0, gh: 0, img: null, cv: null, c2d: null,
+  ax: 0, ay: 0, adir: 0, stepsTaken: 0, black: 0,
+  init() {
+    this.gw = Math.max(10, Math.ceil(W / this.P.cell));
+    this.gh = Math.max(10, Math.ceil(H / this.P.cell));
+    this.grid = new Uint8Array(this.gw * this.gh);
+    this.ax = this.gw >> 1; this.ay = this.gh >> 1; this.adir = 0;
+    this.stepsTaken = 0; this.black = 0;
+    if (!this.cv) this.cv = document.createElement("canvas");
+    this.cv.width = this.gw; this.cv.height = this.gh;
+    this.c2d = this.cv.getContext("2d");
+    this.img = this.c2d.createImageData(this.gw, this.gh);
+  },
+  layout() { if (this.grid) this.init(); },
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("ant re-seeded"); },
+  measures() {
+    return [["steps", this.stepsTaken], ["covered", (100 * this.black / (this.gw * this.gh)).toFixed(1) + "%"], ["dir", "NESW"[this.adir]]];
+  },
+  step(dt) {
+    const g = this.grid, gw = this.gw, gh = this.gh, P = this.P;
+    const k = Math.max(1, Math.floor(P.steps));
+    for (let s = 0; s < k; s++) {
+      const color = g[this.ay * gw + this.ax];
+      let turn = this.eq(color, P);
+      if (typeof turn !== "number" || !isFinite(turn)) turn = (color ? -1 : 1);
+      if (turn === 1) this.adir = (this.adir + 1) & 3;
+      else if (turn === -1) this.adir = (this.adir + 3) & 3;
+      else { /* 0 → no turn */ }
+      g[this.ay * gw + this.ax] = color ? 0 : 1;
+      if (color) this.black--; else this.black++;
+      // forward
+      if (this.adir === 0) this.ay = (this.ay - 1 + gh) % gh;
+      else if (this.adir === 1) this.ax = (this.ax + 1) % gw;
+      else if (this.adir === 2) this.ay = (this.ay + 1) % gh;
+      else this.ax = (this.ax - 1 + gw) % gw;
+      this.stepsTaken++;
+      if (this.stepsTaken % 5 === 0) pushSample(this.black);
+    }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const d = this.img.data, g = this.grid;
+    for (let i = 0; i < g.length; i++) {
+      const k = i * 4;
+      if (g[i]) { d[k] = 210; d[k + 1] = 214; d[k + 2] = 222; }
+      else { d[k] = 18; d[k + 1] = 22; d[k + 2] = 28; }
+      d[k + 3] = 255;
+    }
+    this.c2d.putImageData(this.img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.cv, 0, 0, W, H);
+    ctx.fillStyle = "#f85149";
+    ctx.beginPath(); ctx.arc(this.ax / this.gw * W, this.ay / this.gh * H, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText(`steps ${this.stepsTaken}  covered ${(100 * this.black / (this.gw * this.gh)).toFixed(1)}%`, 12, 18);
+  },
+  xRange() { return [0, 2500]; },
+  presets: [
+    { name: "LR (chaos → highway)", code: "return color ? -1 : 1;\n\n// classic rule", params: { steps: 20 } },
+    { name: "RL (mirror)", code: "return color ? 1 : -1;\n\n// chaotic, no highway", params: { steps: 20 } },
+    { name: "Always right", code: "return 1;\n\n// 104-step loop", params: { steps: 20 } },
+  ],
+};
+
+const spaceship = {
+  id: "spaceship", label: "Rocket to Lightspeed",
+  category: "Relativity",
+  hint: "A spaceship accelerates at constant proper acceleration α in an otherwise static universe. In the Earth frame its velocity asymptotically approaches c — you can burn forever and never quite reach lightspeed. Watch β = v/c creep toward the right edge while ship-time (τ) falls further behind Earth-time (t).",
+  histLabel: "ship speed β = v/c (samples over time)",
+  eqName: "acc(t, params)",
+  eqSig: "t: Earth-frame time (yr) · returns: proper acceleration in g (1 g ≈ 1.03 ly/yr²)",
+  eqDesc: "Constant acceleration in the ship's own rest frame gives coordinate acceleration dv/dt = α(1−β²)^(3/2), which vanishes as β→1: this is what keeps lightspeed unreachable. The equation may also be time dependent — try a burn-and-coast profile. Ship proper time integrates dτ = √(1−β²) dt (time dilation).",
+  eqSpec: { argNames: ["t", "params"], mustReturn: true },
+  params: [
+    { key: "a", label: "Thrust α (g)", min: 0.1,  max: 5,   step: 0.1, value: 1 },
+    { key: "m", label: "Milestones (ly)", min: 1,  max: 20,  step: 1, value: 2 },
+  ],
+  defaultCode:
+`// Proper acceleration α in units of g (1 g ≈ 1.03 ly/yr², c = 1 ly/yr).
+// Keep burning forever: β→1 but never reaches it.
+return params.a || 0;
+
+// burn then coast:
+// return t < 5 ? (params.a || 0) : 0;
+
+// pulse:
+// return (Math.sin(t) > 0) ? (params.a || 0) : 0;`,
+  P: {}, x: 0, v: 0, t: 0, tau: 0, vlog: [], trail: [], stars: [],
+  init() {
+    this.x = 0; this.v = 0; this.t = 0; this.tau = 0;
+    this.vlog.length = 0; this.trail.length = 0;
+    if (this.stars.length === 0) {
+      for (let i = 0; i < 260; i++) {
+        this.stars.push({ x: -40 + rng() * 500, y: -9 + rng() * 18, r: 0.6 + rng() * 1.4 });
+      }
+    }
+  },
+  layout() {},
+  onParam() { this.init(); },
+  onEquation() { this.init(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("rocket re-launched from Earth"); },
+  measures() {
+    const g = 1 / Math.sqrt(Math.max(1e-9, 1 - this.v * this.v));
+    return [["β=v/c", this.v.toFixed(3)], ["γ", g.toFixed(1)], ["t (Earth)", this.t.toFixed(1) + " yr"], ["τ (ship)", this.tau.toFixed(1) + " yr"]];
+  },
+  series() { return [["β", this.vlog]]; },
+  step(dt) {
+    const aLY = 1.03; // ly/yr² per g
+    const f = (st, tt) => {
+      let a = 0;
+      try { a = this.eq(tt, this.P); } catch (e) { a = 0; eqRuntimeError(e); }
+      a = isFinite(a) ? Math.max(0, a) : 0;
+      const v = st[1];
+      const vv = Math.max(0, 1 - v * v);
+      return [st[1], a * aLY * Math.pow(vv, 1.5), Math.sqrt(vv)];
+    };
+    const k1 = f([this.x, this.v, this.tau], this.t);
+    const k2 = f([this.x + dt / 2 * k1[0], this.v + dt / 2 * k1[1], this.tau + dt / 2 * k1[2]], this.t + dt / 2);
+    const k3 = f([this.x + dt / 2 * k2[0], this.v + dt / 2 * k2[1], this.tau + dt / 2 * k2[2]], this.t + dt / 2);
+    const k4 = f([this.x + dt * k3[0], this.v + dt * k3[1], this.tau + dt * k3[2]], this.t + dt);
+    this.x += dt / 6 * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+    this.v += dt / 6 * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+    this.tau += dt / 6 * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]);
+    this.t += dt;
+    this.vlog.push(this.v); if (this.vlog.length > 1200) this.vlog.splice(0, this.vlog.length - 1200);
+    this.trail.push(this.x); if (this.trail.length > 500) this.trail.shift();
+    pushSample(this.v);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const g = 1 / Math.sqrt(Math.max(1e-9, 1 - this.v * this.v));
+    const m = this.P.m, ppL = W / 14;
+    const sx = x => W * 0.32 + (x - this.x) * ppL;
+
+    // static starfield
+    for (const s of this.stars) {
+      if (s.x < this.x - 14 || s.x > this.x + 14) continue;
+      const px = sx(s.x);
+      if (px < -10 || px > W + 10) continue;
+      ctx.fillStyle = "rgba(190,205,222,.7)";
+      ctx.beginPath(); ctx.arc(px, H * 0.42 + s.y * H * 0.02, s.r, 0, 7); ctx.fill();
+    }
+
+    // milestone posts at fixed Earth-frame positions (every m ly)
+    ctx.strokeStyle = "rgba(120,150,190,.5)"; ctx.font = "11px Consolas,monospace";
+    const first = Math.max(0, Math.floor((this.x - 14) / m) * m);
+    for (let k = first; k < this.x + 14; k += m) {
+      const px = sx(k);
+      if (px < -20 || px > W + 20) continue;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath(); ctx.moveTo(px, H * 0.28); ctx.lineTo(px, H * 0.82); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(150,170,200,.85)";
+      ctx.fillText(k + " ly", px + 3, H * 0.27);
+    }
+
+    // Earth marker at origin
+    const ex = sx(0);
+    if (ex > -30 && ex < W + 30) {
+      ctx.fillStyle = "#4ec9b0";
+      ctx.beginPath(); ctx.arc(ex, H * 0.42, 5, 0, 7); ctx.fill();
+      ctx.fillStyle = "rgba(78,201,176,.9)"; ctx.font = "12px Consolas,monospace";
+      ctx.fillText("Earth", ex - 20, H * 0.42 - 10);
+    }
+
+    // trail behind ship
+    if (this.trail.length > 1) {
+      const tl = this.trail.length;
+      for (let i = 1; i < tl; i++) {
+        const a = (i / tl) * 0.45;
+        ctx.strokeStyle = `rgba(255,175,80,${a})`;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(sx(this.trail[i - 1]), H * 0.42);
+        ctx.lineTo(sx(this.trail[i]), H * 0.42);
+        ctx.stroke();
+      }
+    }
+
+    // ship
+    const shipX = sx(this.x);
+    ctx.fillStyle = "#e6edf3";
+    ctx.beginPath();
+    ctx.moveTo(shipX + 14, H * 0.42);
+    ctx.lineTo(shipX + 2, H * 0.42 - 6);
+    ctx.lineTo(shipX + 2, H * 0.42 + 6);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#58a6ff";
+    ctx.fillRect(shipX - 8, H * 0.42 - 4, 12, 8);
+    ctx.fillStyle = "rgba(255,120,80,.9)";
+    ctx.beginPath();
+    ctx.moveTo(shipX - 8, H * 0.42 - 4); ctx.lineTo(shipX - 18, H * 0.42); ctx.lineTo(shipX - 8, H * 0.42 + 4);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#e6edf3"; ctx.font = "12px Consolas,monospace";
+
+    // ship-frame contraction: milestones measured from the ship show spacing m/γ
+    const sp = m / g;
+    ctx.fillStyle = "rgba(88,166,255,.75)";
+    for (let k = 1; k <= 8; k++) {
+      const px = shipX + k * sp * ppL;
+      if (px > W + 10) break;
+      ctx.fillRect(px, H * 0.80, 2, 8);
+    }
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px Consolas,monospace";
+    ctx.fillText(`ship-frame milestone spacing = ${(m / g).toFixed(2)} ly (contracted by ${g.toFixed(1)}×)`, 12, H * 0.80 - 4);
+
+    // velocity gauge reaching for c
+    const gx0 = 70, gx1 = W - 40, gy = H * 0.90;
+    ctx.strokeStyle = "rgba(160,200,255,.4)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(gx0, gy); ctx.lineTo(gx1, gy); ctx.stroke();
+    ctx.fillStyle = "#8b949e"; ctx.font = "12px Consolas,monospace";
+    ctx.fillText("0", gx0 - 14, gy + 4);
+    ctx.fillText("c (lightspeed)", gx1 - 70, gy + 4);
+    const needle = gx0 + (gx1 - gx0) * Math.min(0.99999, this.v);
+    ctx.fillStyle = "#f85149";
+    ctx.beginPath();
+    ctx.moveTo(needle - 6, gy - 8); ctx.lineTo(needle + 6, gy - 8); ctx.lineTo(needle, gy + 8);
+    ctx.closePath(); ctx.fill();
+    ctx.fillText("β=" + this.v.toFixed(4), needle - 30, gy - 12);
+
+    // header readout
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`t=${this.t.toFixed(2)} yr   τ=${this.tau.toFixed(2)} yr   γ=${g.toFixed(2)}`, 12, 22);
+  },
+  xRange() { return [0, 1]; },
+  presets: [
+    { name: "1 g burn", params: { a: 1, m: 2 } },
+    { name: "heavy burn (3 g)", params: { a: 3, m: 2 } },
+    { name: "gentle (0.2 g)", params: { a: 0.2, m: 2 } },
+  ],
+};
+
+const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship];
 let modeIndex = 0;
 let frameCount = 0;
 
@@ -3526,7 +5027,7 @@ function eqRuntimeError(e) {
 }
 
 function categoryOrder(cat) {
-  const order = ["Classical Dynamics", "Celestial Mechanics", "Statistical", "Waves", "Fields", "Emergent Systems", "Chaos"];
+  const order = ["Classical Dynamics", "Celestial Mechanics", "Statistical", "Waves", "Fields", "Emergent Systems", "Chaos", "Relativity", "Mathematical"];
   const i = order.indexOf(cat);
   return i === -1 ? order.length : i;
 }
@@ -3593,6 +5094,7 @@ function buildParams() {
       val.textContent = fmtVal(mode.P[pd.key]);
       saveParam(mode.id, pd.key, mode.P[pd.key]);
       if (mode.onParam) mode.onParam(pd.key);
+      workerRefresh();
     };
     row.append(lab, inp, val); wrap.appendChild(row);
   }
@@ -3634,6 +5136,7 @@ function applyEquation() {
   mode.eq = res.fn;
   if (mode.onEquation) mode.onEquation();
   saveEq(mode.id);
+  workerRefresh();
   $("eqerr").style.display = "none";
   $("eqok").style.display = "block";
   setTimeout(() => { $("eqok").style.display = "none"; }, 1200);
@@ -3645,6 +5148,7 @@ function clearParticles() { particles = []; clearLanding(); }
 function switchMode(i) {
   modeIndex = i;
   mode = MODES[i];
+  stopSimWorker();
   clearParticles();
   // init params from defaults, then restore any saved slider values
   mode.P = {};
@@ -3652,6 +5156,7 @@ function switchMode(i) {
   const savedP = store().p && store().p[mode.id];
   if (savedP) for (const k in savedP) if (k in mode.P && isFinite(savedP[k])) mode.P[k] = savedP[k];
   mode.init();
+  seriesRing.length = 0;
   buildMenu();
   const act = document.querySelector(".simrow.active");
   if (act && act.scrollIntoView) act.scrollIntoView({ block: "nearest" });
@@ -3667,6 +5172,7 @@ function switchMode(i) {
   $("histoLabel").textContent = mode.histLabel || "Distribution of final X";
   setStatus(mode.label + " — ready");
   resize();
+  startSimWorker();
 }
 
 // ---------- histogram ------------------------------------------------------
@@ -3737,6 +5243,110 @@ function drawHistogram() {
   hist.dirty = false;
 }
 
+// ---------- analysis: live measures + time-series ----------------------------
+// A generic readout bar + sparkline. Modes may implement `measures()` returning
+// an object of {label: formattedValue} shown in the readout, and `series()`
+// returning a single number to plot over time. Defaults are computed from the
+// mode's primary field array so every mode gains value with zero edits.
+const seriesRing = [];                       // [{t, v}] ring buffer
+const SERIES_MAX = 6000;
+function primaryField(m) {
+  for (const k of ["u", "y", "psi", "z", "field"]) if (ArrayBuffer.isView(m[k]) && m[k].length) return m[k];
+  return null;
+}
+function simTimeOf(m) {
+  if (typeof m.t === "number") return m.t;
+  if (typeof m.tSim === "number") return m.tSim;
+  if (typeof m.simT === "number") return m.simT;
+  return simTime;
+}
+function fieldStats(field) {
+  if (!field) return null;
+  let mn = Infinity, mx = -Infinity, peak = 0, sum = 0;
+  for (let i = 0; i < field.length; i++) {
+    const v = field[i];
+    if (!isFinite(v)) continue;
+    if (v < mn) mn = v; if (v > mx) mx = v;
+    const a = Math.abs(v); if (a > peak) peak = a; sum += v;
+  }
+  return { mn, mx, peak, mean: sum / field.length };
+}
+function defaultMeasures(m) {
+  const out = {};
+  out["sim t"] = simTimeOf(m).toFixed(3) + "s";
+  const fs = fieldStats(primaryField(m));
+  if (fs) {
+    out["field"] = fs.peak.toPrecision(3);
+    out["min"] = fs.mn.toPrecision(3);
+    out["max"] = fs.mx.toPrecision(3);
+  }
+  return out;
+}
+function defaultSeries(m) {
+  const fs = fieldStats(primaryField(m));
+  if (fs) return fs.peak;
+  if (m.ps && m.ps.length) { let n = 0; for (const p of m.ps) if (!isFinite(p.x) && false) {} return m.ps.length; }
+  return hist.xs.length;
+}
+function collectMeasures() {
+  if (!mode) return {};
+  if (mode.measures) { const x = mode.measures(); if (x && typeof x === "object" && !Array.isArray(x)) return x; }
+  return defaultMeasures(mode);
+}
+function collectSeries() {
+  const v = (mode && mode.series) ? mode.series() : defaultSeries(mode);
+  return isFinite(v) ? v : 0;
+}
+function recordSeries(t) {
+  const v = collectSeries();
+  seriesRing.push({ t, v });
+  if (seriesRing.length > SERIES_MAX) seriesRing.splice(0, seriesRing.length - SERIES_MAX);
+}
+function updateReadouts() {
+  const box = $("readouts");
+  if (!$("showReadouts").checked || !mode) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  const ms = collectMeasures();
+  const lines = [];
+  let first = true;
+  for (const k in ms) {
+    lines.push(`<span class="${first ? '' : 'muted'}">${k} <b>${ms[k]}</b></span>`);
+    first = false;
+  }
+  if (seriesRing.length) {
+    const last = seriesRing[seriesRing.length - 1];
+    lines.push(`<span class="muted">time-series · current <b>${last.v.toPrecision(3)}</b></span>`);
+  }
+  box.innerHTML = lines.join("<br>");
+}
+function drawSpark() {
+  if (!$("showSpark").checked || seriesRing.length < 2) { sctx.clearRect(0, 0, sparkCanvas.width, sparkCanvas.height); return; }
+  const dpr = window.devicePixelRatio || 1;
+  const w = 220, h = 64;
+  if (sparkCanvas.width !== w * dpr) { sparkCanvas.width = w * dpr; sparkCanvas.height = h * dpr; }
+  sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  sctx.clearRect(0, 0, w, h);
+  let mn = Infinity, mx = -Infinity;
+  for (const s of seriesRing) { if (s.v < mn) mn = s.v; if (s.v > mx) mx = s.v; }
+  if (mx === mn) mx = mn + 1;
+  const pad = 4;
+  const t0 = seriesRing[0].t, t1 = seriesRing[seriesRing.length - 1].t;
+  const x = s => pad + (t1 === t0 ? 0.5 : (s.t - t0) / (t1 - t0)) * (w - 2 * pad);
+  const y = v => h - pad - (v - mn) / (mx - mn) * (h - 2 * pad);
+  sctx.strokeStyle = "rgba(48,54,61,.9)"; sctx.lineWidth = 1;
+  sctx.strokeRect(pad, pad - 1, w - 2 * pad, h - 2 * pad + 1);
+  sctx.strokeStyle = "#58a6ff"; sctx.lineWidth = 1.5; sctx.beginPath();
+  for (let i = 0; i < seriesRing.length; i++) { const s = seriesRing[i]; if (i === 0) sctx.moveTo(x(s), y(s.v)); else sctx.lineTo(x(s), y(s.v)); }
+  sctx.stroke();
+  // baseline zero
+  if (mn < 0 && mx > 0) {
+    sctx.strokeStyle = "rgba(63,185,80,.35)"; sctx.lineWidth = 1; sctx.setLineDash([3, 3]);
+    sctx.beginPath(); sctx.moveTo(pad, y(0)); sctx.lineTo(w - pad, y(0)); sctx.stroke(); sctx.setLineDash([]);
+  }
+  sctx.fillStyle = "rgba(139,148,158,.85)"; sctx.font = "9px ui-monospace, monospace";
+  sctx.fillText(`${mn.toPrecision(2)} … ${mx.toPrecision(2)}`, pad + 2, h - 2);
+}
+
 // ---------- export: CSV + PNG ----------------------------------------------
 function download(name, blob) {
   const a = document.createElement("a");
@@ -3777,8 +5387,247 @@ function saveStore(mut) {
 const saveEq = modeId => saveStore(s => { (s.eq = s.eq || {})[modeId] = $("eqeditor").value; });
 const saveParam = (modeId, key, val) => saveStore(s => { ((s.p = s.p || {})[modeId] = s.p[modeId] || {})[key] = val; });
 
+// ---------- snapshots: named full-state captures + shareable links ----------
+const SNAP_KEY = "simlab.snaps";
+function snapStore() { try { return JSON.parse(localStorage.getItem(SNAP_KEY) || "{}") || {}; } catch (e) { return {}; } }
+function saveSnaps(mut) {
+  try { const s = snapStore(); mut(s); localStorage.setItem(SNAP_KEY, JSON.stringify(s)); } catch (e) {}
+  renderSnaps();
+}
+function captureSnapshot(name) {
+  const P = {}; for (const k in mode.P) P[k] = mode.P[k];
+  return { name, modeId: mode.id, P, eq: $("eqeditor").value, savedAt: Date.now() };
+}
+function renderSnaps() {
+  const wrap = $("snaps"); wrap.innerHTML = "";
+  const snaps = snapStore();
+  const keys = Object.keys(snaps).sort((a, b) => (snaps[b].savedAt || 0) - (snaps[a].savedAt || 0));
+  if (keys.length === 0) { wrap.innerHTML = '<span style="color:var(--muted);font-size:11px">No snapshots yet — capture a state you want to revisit or share.</span>'; return; }
+  for (const key of keys) {
+    const s = snaps[key];
+    const item = document.createElement("div"); item.className = "snapitem";
+    const name = document.createElement("span"); name.className = "sname"; name.textContent = s.name || "untitled"; name.title = s.name || "";
+    const sm = document.createElement("span"); sm.className = "smode";
+    const m = MODES.find(x => x.id === s.modeId); sm.textContent = m ? m.label : s.modeId;
+    const btnRestore = document.createElement("button"); btnRestore.className = "topbtn"; btnRestore.textContent = "load";
+    btnRestore.title = "Restore this exact state"; btnRestore.onclick = () => restoreSnapshot(key);
+    const btnLink = document.createElement("button"); btnLink.className = "topbtn"; btnLink.textContent = "🔗";
+    btnLink.title = "Copy a shareable link"; btnLink.onclick = () => copySnapshotLink(key);
+    const btnDel = document.createElement("button"); btnDel.className = "topbtn"; btnDel.textContent = "✕";
+    btnDel.title = "Delete snapshot"; btnDel.onclick = () => { saveSnaps(s => { delete s[key]; }); };
+    item.append(name, sm, btnRestore, btnLink, btnDel);
+    wrap.appendChild(item);
+  }
+}
+function restoreSnapshot(key) {
+  const s = snapStore()[key];
+  if (!s) { setStatus("snapshot not found"); return; }
+  const idx = MODES.findIndex(x => x.id === s.modeId);
+  if (idx < 0) { setStatus("snapshot's mode no longer exists"); return; }
+  switchMode(idx);
+  if (s.P) { mode.P = {}; for (const pd of mode.params) mode.P[pd.key] = pd.value; Object.assign(mode.P, s.P); buildParams(); }
+  if (typeof s.eq === "string") { $("eqeditor").value = s.eq; applyEquation(); }
+  if (mode.init) mode.init();
+  buildPresets();
+  setStatus("snapshot restored: " + (s.name || "untitled"));
+}
+function snapshotPayload(s) {
+  const P = s.P || {};
+  return {
+    v: 1,
+    mode: s.modeId,
+    p: P,
+    e: typeof s.eq === "string" ? s.eq : ($("eqeditor").value),
+  };
+}
+function currentPayload() {
+  const P = {}; for (const k in mode.P) P[k] = mode.P[k];
+  return { v: 1, mode: mode.id, p: P, e: $("eqeditor").value };
+}
+function b64url(obj) {
+  const b = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = ""; for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64decode(str) {
+  const s = str.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+function copyCurrentLink() {
+  const payload = currentPayload();
+  const url = location.href.split("#")[0] + "#s=" + b64url(payload);
+  copyText(url);
+  setStatus("share link copied — open it anywhere to reload this exact state");
+}
+function copySnapshotLink(key) {
+  const s = snapStore()[key];
+  if (!s) { setStatus("snapshot not found"); return; }
+  const url = location.href.split("#")[0] + "#s=" + b64url(snapshotPayload(s));
+  copyText(url);
+  setStatus("share link copied");
+}
+function copyText(txt) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(() => {}, () => fallbackCopy(txt));
+  } else fallbackCopy(txt);
+}
+function fallbackCopy(txt) {
+  const ta = document.createElement("textarea");
+  ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); } catch (e) {}
+  ta.remove();
+}
+function applySharedPayload(payload) {
+  if (!payload || typeof payload.mode !== "string") return;
+  const idx = MODES.findIndex(x => x.id === payload.mode);
+  if (idx < 0) { setStatus("shared mode not found"); return; }
+  switchMode(idx);
+  if (payload.p) { mode.P = {}; for (const pd of mode.params) mode.P[pd.key] = pd.value; Object.assign(mode.P, payload.p); buildParams(); }
+  if (typeof payload.e === "string") { $("eqeditor").value = payload.e; applyEquation(); }
+  if (mode.init) mode.init();
+  buildPresets();
+  setStatus("shared state applied: " + mode.label);
+}
+function loadShareHash() {
+  const h = location.hash || "";
+  const mm = h.match(/#s=([A-Za-z0-9_-]+)/);
+  if (!mm) return;
+  try { applySharedPayload(b64decode(mm[1])); } catch (e) { setStatus("could not read shared link"); }
+}
+$("btnSnapSave").onclick = () => {
+  let name = $("snapName").value.trim();
+  if (!name) name = "snap " + (Object.keys(snapStore()).length + 1) + " · " + mode.label;
+  saveSnaps(s => { s["@" + Date.now().toString(36)] = captureSnapshot(name); });
+  $("snapName").value = "";
+  setStatus("snapshot saved: " + name);
+};
+$("snapName").addEventListener("keydown", e => { if (e.key === "Enter") $("btnSnapSave").click(); });
+$("btnShareLink").onclick = copyCurrentLink;
+$("snapClear").onclick = () => { if (confirm("Delete all snapshots?")) saveSnaps(s => { for (const k in s) delete s[k]; }); };
+renderSnaps();
+
+// ---------- web worker offload ----------------------------------------------
+// Modes marked `worker: true` keep ALL simulation state on `this.*` and never
+// touch the DOM inside `step()`, so their heavy integration can run off the
+// main thread, keeping the equation editor + sliders responsive. The worker is
+// a Blob built from the mode's own method sources (no duplication of physics),
+// so worker output is bit-identical to running `step()` synchronously. Falls
+// back to the synchronous path automatically when workers are unavailable or
+// offload is toggled off.
+const WORKER_CHUNK = 8;
+let simWorker = null, workerBusy = false, workerActive = false;
+function workerEnabled() { return typeof Worker !== "undefined" && $("useWorker") && $("useWorker").checked && mode && mode.worker; }
+function collectWorkerFuncs(m) {
+  const out = {};
+  for (const k in m) if (typeof m[k] === "function") out[k] = m[k].toString();
+  return out;
+}
+function collectWorkerState(m) {
+  const out = {};
+  for (const k in m) if (typeof m[k] !== "function") out[k] = m[k];
+  return out;
+}
+// Convert a method's source string into a valid function *expression*:
+//   "init() { ... }"  (object method shorthand) -> "(function init() { ... })"
+//   "() => {...}" / "function f(){}" / "(x)=>x" -> passed through
+function methodExpr(src) {
+  const s = src.trim();
+  if (/^(function\b|\(|[A-Za-z_$][\w$]*\s*=>)/.test(s)) return "(" + s + ")";
+  if (/^[A-Za-z_$][\w$]*\s*\(/.test(s)) return "(function " + s + ")";
+  return "(" + s + ")";
+}
+function buildWorkerSrc(m, funcs) {
+  const fnParts = [];
+  for (const k in funcs) fnParts.push(`mode.${k} = ${methodExpr(funcs[k])};`);
+  return `"use strict";
+// ---- shared helpers (worker must be self-contained) ----
+let __hist = [];
+function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+function pushSample(x) { if (isFinite(x)) { __hist.push(x); if (__hist.length > 40000) __hist.splice(0, __hist.length - 40000); } }
+function eqRuntimeError() {}
+let __rngState = 123456789;
+function rng() { __rngState = (Math.imul(__rngState, 1103515245) + 12345) & 0x7fffffff; return __rngState / 0x7fffffff; }
+// ---- mode reconstruction ----
+let mode = {};
+${fnParts.join("\n")}
+let P = {};
+function compileEq(code, argNames) { try { return new Function(...argNames, '"use strict";\\n' + (code || "")); } catch (e) { return null; } }
+function applySetup(d) {
+  P = d.P || {};
+  for (const k in d.state) mode[k] = d.state[k];
+  mode.P = P;
+  mode.eq = compileEq(d.code, d.argNames);
+  if (typeof mode.init === "function") mode.init();
+}
+function workerWire() {
+  self.onmessage = (e) => {
+    const d = e.data;
+    if (d.cmd === "setup") { applySetup(d); postMessage({ cmd: "ok" }); }
+    else if (d.cmd === "run") {
+      __hist.length = 0;
+      let steps = 0;
+      for (let i = 0; i < d.steps; i++) { if (mode.eq) mode.step(d.dt); steps++; }
+      const out = { cmd: "done", steps, hist: __hist.slice(), P: mode.P };
+      for (const k in mode) if (typeof mode[k] !== "function") out[k] = mode[k];
+      postMessage(out);
+    }
+  };
+}
+workerWire();
+`;
+}
+function startSimWorker() {
+  stopSimWorker();
+  if (!workerEnabled()) { workerActive = false; return false; }
+  try {
+    const funcs = collectWorkerFuncs(mode);
+    const src = buildWorkerSrc(mode, funcs);
+    const blob = new Blob([src], { type: "text/javascript" });
+    simWorker = new Worker(URL.createObjectURL(blob));
+    workerBusy = true;
+    simWorker.onmessage = onWorkerMessage;
+    simWorker.postMessage({ cmd: "setup", P: mode.P, code: $("eqeditor").value, argNames: mode.eqSpec.argNames, state: collectWorkerState(mode) });
+    workerActive = true;
+    return true;
+  } catch (e) { stopSimWorker(); workerActive = false; return false; }
+}
+function stopSimWorker() {
+  if (simWorker) { try { simWorker.terminate(); } catch (e) {} simWorker = null; }
+  workerActive = false; workerBusy = false;
+}
+function workerRefresh() {
+  // re-sync worker after param/eq/init changes on the main thread
+  if (!simWorker || !workerActive) return;
+  workerBusy = true;
+  simWorker.postMessage({ cmd: "setup", P: mode.P, code: $("eqeditor").value, argNames: mode.eqSpec.argNames, state: collectWorkerState(mode) });
+}
+function onWorkerMessage(e) {
+  const d = e.data;
+  if (!d) return;
+  if (d.cmd === "ok") { workerBusy = false; return; }
+  if (d.cmd === "done") {
+    // apply returned state back onto the authoritative mode for drawing
+    for (const k in d) { if (k === "cmd" || k === "steps" || k === "hist" || k === "P") continue; mode[k] = d[k]; }
+    if (d.P) for (const k in d.P) mode.P[k] = d.P[k];
+    if (d.hist) for (const x of d.hist) pushSample(x);
+    simTime += (d.steps || 0) * DT;
+    if (d.steps) recordSeries(simTime);
+    updateReadouts();
+    drawSpark();
+    workerBusy = false;
+  }
+}
+$("useWorker").onchange = () => {
+  if (workerEnabled()) startSimWorker(); else stopSimWorker();
+  setStatus(workerActive ? "worker offload on" : "worker offload off");
+};
+
 // ---------- buttons / keys -------------------------------------------------
-$("btnDrop").onclick = () => { mode.drop(mode.id === "force" ? mode.P.n : 100); };
+$("btnDrop").onclick = () => { mode.drop(mode.id === "force" ? mode.P.n : 100); workerRefresh(); };
 $("btnPause").onclick = togglePause;
 $("btnClear").onclick = () => { clearParticles(); setStatus("cleared"); };
 $("speed").oninput = e => { speedMul = parseFloat(e.target.value); $("speedval").textContent = speedMul + "×"; };
@@ -3795,10 +5644,12 @@ $("eqeditor").addEventListener("keydown", e => {
     applyEquation(); markPreset(null);
     saveStore(s => { if (s.eq) delete s.eq[mode.id]; if (s.p) delete s.p[mode.id]; });
     mode.P = {}; for (const pd of mode.params) mode.P[pd.key] = pd.value;
-    mode.init(); buildParams();
+    mode.init(); buildParams(); workerRefresh();
   };
 $("bins").oninput = () => { hist.dirty = true; };
 ["trails", "showTheory", "colorBySpeed"].forEach(id => $(id).onchange = () => { hist.dirty = true; });
+["showReadouts"].forEach(id => $(id).onchange = () => updateReadouts());
+["showSpark"].forEach(id => $(id).onchange = () => drawSpark());
 
 function togglePause() {
   paused = !paused;
@@ -3821,6 +5672,7 @@ function debounce(fn, ms) {
 // ---------- go -------------------------------------------------------------
 resize();
 switchMode(0);
+loadShareHash();
 requestAnimationFrame(frame);
 </script>
 </body>

@@ -5147,7 +5147,202 @@ return params.a || 0;
   ],
 };
 
-const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit];
+const syncPendula = {
+  id: "syncPendula", label: "Pendulum Synchronization",
+  category: "Waves",
+  hint: "A row of pendulums hangs from a light beam that flexes and slides. Released with staggered phases, they beat and rattle against each other through the beam and the inter-bob springs, then synchronize — the row collapses into one in-phase column. A weak self-sustaining 'escapement' keeps them swinging (like metronomes), and slight length differences must be overcome by frequency entrainment.",
+  histLabel: "pendulum angle θ (rad) — sharpens into one spike as the row locks",
+  eqName: "beamForce(t, params)",
+  eqSig: "t: time (s) · returns: extra horizontal force (N) applied to the shared beam",
+  eqDesc: "The pendulums are self-sustained Van der Pol oscillators ('mainspring' escapement) coupled two ways: through the sliding beam and through springs + relative-velocity dashpots between neighbouring bobs. The beam damping penalizes every pattern except the fully in-phase one, so energy bleeds out of scrambling modes until the row runs as one. Edit this to rock the beam with an external force (try a sine near ω₀=√(g/L)) and watch the row lock to the drive instead.",
+  eqSpec: { argNames: ["t", "params"], mustReturn: true },
+  params: [
+    { key: "n", label: "Pendulums", min: 2, max: 16, step: 1, value: 8 },
+    { key: "L", label: "Length", min: 0.7, max: 2, step: 0.05, value: 1.4 },
+    { key: "g", label: "Gravity", min: 1, max: 30, step: 1, value: 12 },
+    { key: "K", label: "Beam flex (coupling)", min: 0.2, max: 2.5, step: 0.05, value: 0.8 },
+    { key: "mainspring", label: "Escapement", min: 0, max: 0.4, step: 0.01, value: 0.12 },
+    { key: "damp", label: "Damping", min: 0, max: 0.3, step: 0.01, value: 0.03 },
+    { key: "spread", label: "Length spread %", min: 0, max: 5, step: 0.5, value: 3 },
+  ],
+  defaultCode:
+`// Extra horizontal force on the shared beam (N). 0 → pure mutual coupling.
+return 0;
+// rock the beam near the pendulum frequency (ω₀=√(12/1.4)≈2.93):
+// return 1.1 * Math.sin(2.93 * t);
+// one hard sideways slap:
+// return t < 0.5 ? 3 : 0;`,
+  P: {}, state: null, _L: [], _Dd: 0, _M: 0.5, _k: 2, _cs: 0.5, _kappa: 0.8,
+  lock: 0, amp: 0, t: 0, lockLog: [],
+  init() {
+    const n = Math.max(2, this.P.n | 0);
+    this._L = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const f = n > 1 ? (i / (n - 1) - 0.5) : 0;
+      this._L[i] = this.P.L * (1 + (this.P.spread / 100) * f);
+    }
+    this._Dd = 0.5 * this.P.K;
+    this.state = [0, 0];
+    for (let i = 0; i < n; i++) this.state.push(0.9 * Math.cos(0.9 * i), 0);
+    this.lock = 0; this.amp = 0; this.t = 0; this.lockLog.length = 0;
+  },
+  layout() {},
+  onParam(key) {
+    if (key === "n" || key === "L" || key === "g" || key === "K" || key === "spread") this.init();
+  },
+  onPreset() { this.init(); },
+  drop() { this.init(); setStatus("pendulums released with staggered phases"); },
+  measures() {
+    return [["phase lock", this.lock.toFixed(3)], ["mean swing", (this.amp * 57.2958).toFixed(0) + "°"],
+            ["beam shift", (this.state ? this.state[0].toFixed(2) : "0.00") + " m"], ["t", this.t.toFixed(1) + " s"]];
+  },
+  series() { return [["phase lock", this.lockLog]]; },
+  vec(st, Fd) {
+    const P = this.P, g = P.g, n = this._L.length;
+    const L = this._L, K = P.K, Dd = this._Dd, c = P.damp + 1e-6;
+    const ms = P.mainspring, kappa = this._kappa;
+    const [s, u] = st;
+    let A = this._M + n, sumSin2 = 0, sumCF = 0;
+    let F1 = -this._k * s - this._cs * u;
+    const F2 = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const th = st[2 + 2 * i], om = st[3 + 2 * i], li = L[i], ct = Math.cos(th);
+      let Fs = 0;
+      if (i > 0) {
+        const xa = s + L[i - 1] * Math.sin(st[2 + 2 * i - 2]);
+        const va = u + L[i - 1] * Math.cos(st[2 + 2 * i - 2]) * st[3 + 2 * i - 2];
+        const xb = s + li * Math.sin(th), vb = u + li * ct * om;
+        Fs += K * (xa - xb) + Dd * (va - vb);
+      }
+      if (i < n - 1) {
+        const xa2 = s + L[i + 1] * Math.sin(st[2 + 2 * i + 2]);
+        const va2 = u + L[i + 1] * Math.cos(st[2 + 2 * i + 2]) * st[3 + 2 * i + 2];
+        const xb2 = s + li * Math.sin(th), vb2 = u + li * ct * om;
+        Fs += K * (xa2 - xb2) + Dd * (va2 - vb2);
+      }
+      F2[i] = -g * li * Math.sin(th) - c * om + (ms - kappa * th * th) * om * li * li + li * ct * Fs;
+      sumSin2 += 1 - ct * ct;
+      sumCF += ct * F2[i] / li;
+      F1 += li * Math.sin(th) * om * om;
+    }
+    F1 += Fd;
+    const ud = (F1 - sumCF) / (A - sumSin2 + 1e-12);
+    const d = new Array(st.length);
+    d[0] = u; d[1] = ud;
+    for (let i = 0; i < n; i++) {
+      const th = st[2 + 2 * i], om = st[3 + 2 * i], li = L[i];
+      d[2 + 2 * i] = om;
+      d[3 + 2 * i] = (F2[i] - li * Math.cos(th) * ud) / (li * li);
+    }
+    return d;
+  },
+  step(dt) {
+    let Fd = 0;
+    try {
+      const v = this.eq(this.t, this.P);
+      if (isFinite(v)) Fd = +v || 0;
+    } catch (e) { eqRuntimeError(e); }
+    this.state = rk4(this.state, dt, st => this.vec(st, Fd));
+    const n = this._L.length;
+    for (let i = 0; i < n; i++) {
+      const j = 3 + 2 * i;
+      if (Math.abs(this.state[j]) > 14) this.state[j] = Math.sign(this.state[j]) * 14;
+    }
+    let sr = 0, sc = 0, ampSum = 0;
+    for (let i = 0; i < n; i++) {
+      const th = this.state[2 + 2 * i];
+      sr += Math.sin(th); sc += Math.cos(th); ampSum += Math.abs(th);
+    }
+    const mag = Math.hypot(sr, sc) / n;
+    this.lock = 1 - Math.sqrt(Math.max(0, 1 - mag * mag));
+    this.amp = ampSum / n;
+    this.t += dt;
+    if (this.lockLog.length > 1200) this.lockLog.splice(0, this.lockLog.length - 1200);
+    if (frameCount % 4 === 0) {
+      for (let i = 0; i < n; i++) pushSample(this.state[2 + 2 * i]);
+      this.lockLog.push(this.lock);
+    }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const n = this._L.length, st = this.state;
+    const pxPerM = Math.min(W * 0.18, H * 0.32) / this.P.L;
+    const beamY = 52;
+    const gap = n > 1 ? (W * 0.76) / (n - 1) : 0;
+    const ox = W * 0.12;
+    const shift = st ? st[0] * pxPerM * 0.5 : 0;
+
+    // beam
+    ctx.fillStyle = "rgba(139,148,158,.9)";
+    ctx.fillRect(ox - 4 + shift, beamY - 9, W * 0.76 + 8, 9);
+    ctx.strokeStyle = "rgba(139,148,158,.35)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ox - 4 + shift, beamY + 0); ctx.lineTo(ox + W * 0.76 + 4 + shift, beamY + 0); ctx.stroke();
+
+    // mean phase for colour keying
+    let sr = 0, sc = 0;
+    for (let i = 0; i < n; i++) { sr += Math.sin(st[2 + 2 * i]); sc += Math.cos(st[2 + 2 * i]); }
+    const meanPh = Math.atan2(sr, sc);
+    const bobX = [], bobY = [];
+    for (let i = 0; i < n; i++) {
+      const th = st[2 + 2 * i];
+      const x = ox + i * gap + shift + pxPerM * Math.sin(th);
+      const y = beamY + pxPerM * Math.cos(th);
+      bobX.push(x); bobY.push(y);
+    }
+    // coupling springs between neighbours
+    ctx.strokeStyle = "rgba(88,166,255,.45)"; ctx.lineWidth = 1.2;
+    ctx.setLineDash([4, 4]);
+    for (let i = 0; i < n - 1; i++) {
+      ctx.beginPath(); ctx.moveTo(bobX[i], bobY[i]); ctx.lineTo(bobX[i + 1], bobY[i + 1]); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // rods + bobs
+    for (let i = 0; i < n; i++) {
+      const th = st[2 + 2 * i];
+      const x = ox + i * gap + shift, y = beamY;
+      ctx.strokeStyle = "rgba(139,148,158,.55)"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(bobX[i], bobY[i]); ctx.stroke();
+      const hue = (120 + (th - meanPh) * 90) % 360;
+      ctx.fillStyle = `hsl(${hue},90%,${55 + 8 * Math.cos(th)}%)`;
+      ctx.beginPath(); ctx.arc(bobX[i], bobY[i], 7, 0, 7); ctx.fill();
+    }
+
+    // phase strip: height ∝ sin θ per pendulum
+    const sy = H - 58, sh = 34;
+    ctx.strokeStyle = "rgba(88,166,255,.25)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ox, sy); ctx.lineTo(ox + W * 0.76, sy); ctx.stroke();
+    for (let i = 0; i < n; i++) {
+      const th = st[2 + 2 * i];
+      const bx = ox + i * gap;
+      ctx.strokeStyle = `hsl(${(120 + (th - meanPh) * 90) % 360},90%,70%)`;
+      ctx.lineWidth = 8;
+      ctx.beginPath(); ctx.moveTo(bx, sy); ctx.lineTo(bx, sy - Math.sin(th) * sh); ctx.stroke();
+    }
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("sin θ per pendulum → a flat line = synchronized", ox + W * 0.76 + 8, sy + 4);
+
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`t=${this.t.toFixed(1)} s   phase lock=${this.lock.toFixed(3)}   mean |θ|=${(this.amp * 57.2958).toFixed(0)}°`, 12, 22);
+    // lock meter
+    ctx.strokeStyle = "rgba(160,200,255,.35)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(12, 36); ctx.lineTo(220, 36); ctx.stroke();
+    ctx.fillStyle = this.lock > 0.9 ? "#3fb950" : "#d29922";
+    ctx.fillRect(12, 32, 208 * Math.min(1, this.lock), 4);
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px Consolas,monospace";
+    ctx.fillText("0", 8, 46); ctx.fillText("1", 218, 46);
+  },
+  xRange() { return [-Math.PI, Math.PI]; },
+  presets: [
+    { name: "Metronome sync", params: { mainspring: 0.12, damp: 0.03, spread: 3, K: 0.8 }, code: "return 0;\n// extra force on the beam — 0 keeps pure mutual coupling" },
+    { name: "Huygens free decay", params: { mainspring: 0, damp: 0.18, spread: 0, K: 0.8 }, code: "return 0;" },
+    { name: "Beats to lock", params: { mainspring: 0.2, damp: 0.03, spread: 4, K: 0.8 }, code: "return 0;" },
+    { name: "Rock the beam", params: { mainspring: 0.12, damp: 0.03, spread: 0, K: 0.8 }, code: "return 1.1 * Math.sin(2.93 * t);" },
+  ],
+  defaultPresetName: "Metronome sync",
+};
+
+const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit, syncPendula];
 let modeIndex = 0;
 let frameCount = 0;
 

@@ -6045,7 +6045,616 @@ return 1 / (k * k);
   ],
 };
 
-const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit, syncPendula, collatz, mandelbrot, epicycles, newtonFractal, seriesZoo];
+// ==========================================================================
+//  KICKED ROTOR / STANDARD MAP (Chirikov)
+// ==========================================================================
+const standardMap = {
+  id: "standardMap", label: "Kicked Rotor",
+  category: "Classical Dynamics",
+  hint: "A rotor kicked every revolution. The standard map θ→θ+p, p→p+K·sin θ shows the transition from regular to Hamiltonian chaos as K increases. At K≈0.97 the last KAM torus breaks and global chaos sets in.",
+  histLabel: "Energy |p| samples",
+  eqName: "kick(theta, p, params)",
+  eqSig: "theta: angle mod 2π · p: angular momentum · returns: kick impulse added to p",
+  eqDesc: "Default K·sin θ gives the classic Chirikov map. Try K·sin(2θ) for period doubling, or a sawtooth for intermittent chaos.",
+  eqSpec: { argNames: ["theta", "p", "params"], mustReturn: true },
+  params: [
+    { key: "K", label: "Kick strength K", min: 0, max: 10, step: 0.05, value: 0.9716 },
+  ],
+  defaultCode:
+`// Chirikov standard map kick
+return params.K * Math.sin(theta);
+
+// try: period-doubling kick
+// return params.K * Math.sin(2 * theta);
+
+// try: sawtooth kick (intermittent)
+// return params.K * (2 * (theta / (2*Math.PI)) - 1);`,
+  P: {}, theta: 0.5, p: 0.3, trail: [], _pts: 5000,
+  init() { this.theta = 0.5; this.p = 0.3; this.trail = []; this._snap = []; this._ev = 0; },
+  layout() {},
+  onParam() {},
+  drop(n) { this.init(); setStatus("standard map reset"); },
+  onPreset() { this.init(); },
+  measures() { return [["θ", (this.theta % (2*Math.PI)).toFixed(3)], ["p", this.p.toFixed(3)]]; },
+  series() { return [["|p|", this.trail]]; },
+  xRange() { return [0, Math.max(2, ...this.trail)]; },
+  step(dt) {
+    const P = this.P;
+    try {
+      const kick = this.eq(this.theta, this.p, P);
+      if (!isFinite(kick)) return;
+      this.p += kick;
+      this.theta = ((this.theta + this.p) % (2*Math.PI) + 4*Math.PI) % (2*Math.PI);
+    } catch (e) { eqRuntimeError(e); }
+    this.trail.push(Math.abs(this.p));
+    if (this.trail.length > 1200) this.trail.splice(0, this.trail.length - 1200);
+    pushSample(Math.abs(this.p));
+    // accumulate phase-space points for portrait (every 16 steps for speed)
+    this._ev++;
+    if (this._ev % 16 === 0) { this._snap.push(this.theta, this.p); if (this._snap.length > 10000) this._snap.splice(0, 10000); }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const pad = { l: 60, r: 16, t: 36, b: 24 };
+    // phase-space portrait: θ (x) vs p (y), wrapped to [0,2π]×[-π,π]  →  remap to [0,2π]×[0,2π]
+    const gx = W - pad.l - pad.r, gy = H - pad.t - pad.b;
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(pad.l, pad.t, gx, gy);
+    ctx.strokeStyle = "rgba(139,148,158,.25)"; ctx.lineWidth = 1;
+    ctx.strokeRect(pad.l, pad.t, gx, gy);
+    // draw trail as phase-space points
+    const snap = this._snap;
+    ctx.fillStyle = "rgba(88,166,255,.3)";
+    ctx.beginPath();
+    for (let i = 0; i < snap.length; i += 2) {
+      const sx = pad.l + (snap[i] / (2*Math.PI)) * gx;
+      const py = ((snap[i+1] % (2*Math.PI) + 2*Math.PI) % (2*Math.PI));
+      const sy = pad.t + (1 - py / (2*Math.PI)) * gy;
+      ctx.moveTo(sx + 1.2, sy); ctx.arc(sx, sy, 1.2, 0, 7);
+    }
+    ctx.fill();
+    // current point highlight
+    const cx = pad.l + (this.theta / (2*Math.PI)) * gx;
+    const cp = ((this.p % (2*Math.PI) + 2*Math.PI) % (2*Math.PI));
+    const cy = pad.t + (1 - cp / (2*Math.PI)) * gy;
+    ctx.fillStyle = "#f85149";
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 7); ctx.fill();
+    // axes
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("θ", pad.l + gx / 2 - 4, pad.t + gy + 14);
+    ctx.fillText("p", pad.l - 14, pad.t + gy / 2 + 4);
+    ctx.fillText("0", pad.l - 4, pad.t + gy + 14);
+    ctx.fillText("2π", pad.l + gx - 12, pad.t + gy + 14);
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`K=${this.P.K.toFixed(3)}  θ=${(this.theta%(2*Math.PI)).toFixed(3)}  p=${this.p.toFixed(3)}`, 12, 22);
+    if (this.P.K < 0.9) ctx.fillText("regular (KAM tori intact)", 12, 36);
+    else if (this.P.K < 1.5) ctx.fillText("mixed — islands in chaos sea", 12, 36);
+    else ctx.fillText("globally chaotic (diffusive)", 12, 36);
+  },
+  presets: [
+    { name: "Near-critical (last KAM torus)", params: { K: 0.9716 } },
+    { name: "Weak chaos", params: { K: 0.5 } },
+    { name: "Strong chaos", params: { K: 2.5 } },
+    { name: "Ultra-chaotic", params: { K: 6.0 } },
+  ],
+};
+
+// ==========================================================================
+//  THREE-BODY CHOREOGRAPHY
+// ==========================================================================
+const threeBody = {
+  id: "threeBody", label: "Three-Body Choreography",
+  category: "Classical Dynamics",
+  hint: "Three equal masses in gravitational orbit. Famous solutions include the figure-8 (Chenciner–Montgomery) and Lagrange equilateral triangle. Edit the force law and watch which choreographies survive.",
+  histLabel: "Binding energy samples",
+  eqName: "accel(bodies, params)",
+  eqSig: "bodies = [{x,y,vx,vy,m},…] · returns: [{ax,ay},…] one acceleration per body",
+  eqDesc: "Newton gravity with softening ε. Flip sign for repulsion, change exponent 1/r² → 1/r³, or add drag to cool into a bound triple.",
+  eqSpec: { argNames: ["bodies", "params"], mustReturn: true },
+  params: [
+    { key: "G",   label: "Gravity G",  min: 0.1,  max: 10,   step: 0.1,  value: 1 },
+    { key: "eps", label: "Softening ε", min: 0.01, max: 2,    step: 0.01, value: 0.05 },
+  ],
+  defaultCode:
+`// Newton gravity, G=1, softening epsilon
+const eps2 = params.eps * params.eps, G = params.G;
+const acc = bodies.map(() => ({ax:0, ay:0}));
+for (let i = 0; i < bodies.length; i++) {
+  for (let j = i+1; j < bodies.length; j++) {
+    const dx = bodies[j].x - bodies[i].x, dy = bodies[j].y - bodies[i].y;
+    const r2 = dx*dx + dy*dy + eps2;
+    const f = G / (r2 * Math.sqrt(r2));
+    acc[i].ax += f * dx * bodies[j].m;  acc[i].ay += f * dy * bodies[j].m;
+    acc[j].ax -= f * dx * bodies[i].m;  acc[j].ay -= f * dy * bodies[i].m;
+  }
+}
+return acc;
+
+// try — repulsive + gravity balance:
+// const f2 = f * (1 - 0.1 * Math.exp(-r2));
+// acc[i].ax += f2*dx*bodies[j].m; ...`,
+  P: {}, bodies: [], trail: [[], [], []], t: 0, _E: 0,
+  _presets: {
+    "figure8": [
+      { x: -0.97000436, y: 0.24308753, vx: 0.4662036850, vy: 0.4323657300, m: 1 },
+      { x: 0,           y: 0,           vx: -0.9324073700, vy: -0.8647314600, m: 1 },
+      { x: 0.97000436,  y: -0.24308753, vx: 0.4662036850, vy: 0.4323657300, m: 1 },
+    ],
+    "lagrange": (function(){ const a=2*Math.PI/3; return [
+      {x:Math.cos(a),y:Math.sin(a),vx:-Math.sin(a)*0.5,vy:Math.cos(a)*0.5,m:1},
+      {x:Math.cos(a+2*Math.PI/3),y:Math.sin(a+2*Math.PI/3),vx:-Math.sin(a+2*Math.PI/3)*0.5,vy:Math.cos(a+2*Math.PI/3)*0.5,m:1},
+      {x:Math.cos(a+4*Math.PI/3),y:Math.sin(a+4*Math.PI/3),vx:-Math.sin(a+4*Math.PI/3)*0.5,vy:Math.cos(a+4*Math.PI/3)*0.5,m:1},
+    ]; })(),
+    "butterfly": [
+      { x: -1, y: 0, vx: 0.30689, vy: 0.12551, m: 1 },
+      { x: 1,  y: 0, vx: 0.30689, vy: 0.12551, m: 1 },
+      { x: 0,  y: 0, vx: -0.61378, vy: -0.25102, m: 1 },
+    ],
+    "yarn": [
+      { x: -1, y: 0,  vx: 0.379,  vy: 0.179, m: 1 },
+      { x: 1,  y: 0,  vx: 0.379,  vy: 0.179, m: 1 },
+      { x: 0,  y: 1,  vx: -0.758, vy: -0.358, m: 1 },
+    ],
+  },
+  _presetNames: ["figure8", "lagrange", "butterfly", "yarn"],
+  _pi: 0,
+  init() {
+    this._loadPreset(this._presetNames[this._pi]);
+  },
+  _loadPreset(name) {
+    const src = this._presets[name]; if (!src) return;
+    this.bodies = src.map(b => ({...b}));
+    this.trail = [[], [], []]; this.t = 0; this._E = this._energy();
+  },
+  layout() {},
+  onParam() {},
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("three-body reset"); },
+  _energy() {
+    const G = this.P.G || 1, eps2 = (this.P.eps||0.05)**2;
+    let KE = 0, PE = 0;
+    for (let i = 0; i < 3; i++) { const b = this.bodies[i]; KE += 0.5 * b.m * (b.vx*b.vx + b.vy*b.vy); }
+    for (let i = 0; i < 3; i++) for (let j = i+1; j < 3; j++) {
+      const dx = this.bodies[j].x-this.bodies[i].x, dy = this.bodies[j].y-this.bodies[i].y;
+      PE -= G * this.bodies[i].m * this.bodies[j].m / Math.sqrt(dx*dx+dy*dy+eps2);
+    }
+    return KE + PE;
+  },
+  measures() { return [["E", (this._energy()).toFixed(3)], ["t", this.t.toFixed(1)]]; },
+  series() { return [["|E|", this.trail[0].map(Math.abs)]]; },
+  xRange() { return [Math.min(-0.5, ...this.trail[0].map(Math.abs)), Math.max(5, ...this.trail[0].map(Math.abs))].slice(0, 2); },
+  step(dt) {
+    const P = this.P, N = 3;
+    // leapfrog (kick-drift-kick) for energy stability
+    try {
+      const acc = this.eq(this.bodies, P);
+      for (let i = 0; i < N; i++) if (acc[i] && isFinite(acc[i].ax) && isFinite(acc[i].ay))
+        { this.bodies[i].vx += acc[i].ax * dt * 0.5; this.bodies[i].vy += acc[i].ay * dt * 0.5; }
+    } catch (e) { eqRuntimeError(e); }
+    for (let i = 0; i < N; i++) { this.bodies[i].x += this.bodies[i].vx * dt; this.bodies[i].y += this.bodies[i].vy * dt; }
+    try {
+      const acc = this.eq(this.bodies, P);
+      for (let i = 0; i < N; i++) if (acc[i] && isFinite(acc[i].ax) && isFinite(acc[i].ay))
+        { this.bodies[i].vx += acc[i].ax * dt * 0.5; this.bodies[i].vy += acc[i].ay * dt * 0.5; }
+    } catch (e) { eqRuntimeError(e); }
+    this.t += dt;
+    // trails
+    for (let i = 0; i < N; i++) { this.trail[i].push(this.bodies[i].x, this.bodies[i].y); if (this.trail[i].length > 2400) this.trail[i].splice(0, this.trail[i].length - 2400); }
+    if (frameCount % 12 === 0) { this._E = this._energy(); pushSample(Math.abs(this._E)); }
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    // auto-scale to fit bodies
+    let ax = 0, ay = 0;
+    for (const b of this.bodies) { ax = Math.max(ax, Math.abs(b.x)); ay = Math.max(ay, Math.abs(b.y)); }
+    const span = Math.max(1.5, Math.max(ax, ay) * 1.6);
+    const cx = W / 2, cy = H / 2, sc = Math.min(W, H) * 0.42 / span;
+    const colors = ["#f85149", "#58a6ff", "#3fb950"];
+    // trails
+    for (let i = 0; i < 3; i++) {
+      const d = this.trail[i];
+      if (d.length < 4) continue;
+      ctx.strokeStyle = colors[i]; ctx.globalAlpha = 0.35; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(cx + d[0]*sc, cy + d[1]*sc);
+      for (let j = 2; j < d.length; j += 2) ctx.lineTo(cx + d[j]*sc, cy + d[j+1]*sc);
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    // bodies
+    for (let i = 0; i < 3; i++) {
+      const b = this.bodies[i];
+      ctx.fillStyle = colors[i];
+      ctx.beginPath(); ctx.arc(cx + b.x*sc, cy + b.y*sc, 6, 0, 7); ctx.fill();
+      // velocity arrow
+      ctx.strokeStyle = colors[i]; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(cx+b.x*sc, cy+b.y*sc);
+      ctx.lineTo(cx+(b.x+b.vx*0.3)*sc, cy+(b.y+b.vy*0.3)*sc); ctx.stroke();
+    }
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`t=${this.t.toFixed(1)}  E=${this._E.toFixed(3)}  G=${this.P.G}`, 12, 22);
+  },
+  presets: [
+    { name: "Figure-8 (Chenciner–Montgomery)", params: {}, onPreset(p) { this._pi = 0; this._loadPreset("figure8"); } },
+    { name: "Lagrange equilateral", params: {}, onPreset(p) { this._pi = 1; this._loadPreset("lagrange"); } },
+    { name: "Butterfly", params: {}, onPreset(p) { this._pi = 2; this._loadPreset("butterfly"); } },
+    { name: "Yarn", params: {}, onPreset(p) { this._pi = 3; this._loadPreset("yarn"); } },
+  ],
+};
+
+// ==========================================================================
+//  EULER'S DISK
+// ==========================================================================
+const eulerDisk = {
+  id: "eulerDisk", label: "Euler's Disk",
+  category: "Classical Dynamics",
+  hint: "A spinning disk rolling on a flat surface loses energy to friction. The contact point precession accelerates as the disk flattens — a beautiful 'finite-time singularity'. Edit friction, initial spin, and tilt.",
+  histLabel: "Precession frequency (Hz)",
+  eqName: "friction(E, tilt, params)",
+  eqSig: "E: kinetic energy · tilt: angle from vertical · returns: energy loss rate (W)",
+  eqDesc: "Default linear friction damps energy smoothly. Try quadratic friction E² for a sharper ending, or negative friction to inject energy.",
+  eqSpec: { argNames: ["E", "tilt", "params"], mustReturn: true },
+  params: [
+    { key: "mu",  label: "Friction μ",   min: 0.001, max: 0.1,  step: 0.001, value: 0.02 },
+    { key: "I",   label: "Disk inertia",  min: 0.1,   max: 5,    step: 0.1,   value: 1 },
+    { key: "R",   label: "Disk radius",   min: 0.05,  max: 1,    step: 0.01,  value: 0.2 },
+  ],
+  defaultCode:
+`// friction power: linear in energy
+return params.mu * E;
+
+// try — quadratic friction (sharper ending):
+// return params.mu * E * E;
+
+// try — energy injection (negative friction):
+// return -0.01 * E * Math.sin(tilt);`,
+  P: {}, E: 0, tilt: 0.5, phi: 0, psi: 0, t: 0, freqHist: [], _maxTilt: 0.5,
+  init() { this.E = 5; this.tilt = 0.5; this.phi = 0; this.psi = 0; this.t = 0; this._maxTilt = 0.5; this.freqHist = []; this._wobble = 0; },
+  layout() {},
+  onParam() {},
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("disk reset"); },
+  measures() {
+    const omega = Math.sqrt(Math.max(0, this.E) / (this.P.I || 1));
+    const prec = this.tilt > 0.01 ? omega / (1 + (this.P.R||0.2)*Math.cos(this.tilt)) : 0;
+    return [["tilt", (this.tilt*180/Math.PI).toFixed(1) + "°"], ["ω", omega.toFixed(2)], ["precession", prec.toFixed(2)]];
+  },
+  series() { return [["precession freq", this.freqHist]]; },
+  xRange() { return [0, Math.max(2, ...this.freqHist)]; },
+  step(dt) {
+    const P = this.P, I = P.I || 1, R = P.R || 0.2;
+    try {
+      const loss = this.eq(this.E, this.tilt, P);
+      if (isFinite(loss)) this.E = Math.max(0, this.E - loss * dt);
+    } catch (e) { eqRuntimeError(e); }
+    const omega = Math.sqrt(Math.max(0, this.E) / I);
+    // tilt decays slowly with energy
+    this.tilt = Math.max(0.001, 0.5 * Math.sqrt(this.E / 5));
+    if (this.tilt > this._maxTilt) this._maxTilt = this.tilt;
+    // precession accelerates as tilt decreases (Euler's disk effect)
+    const precRate = omega > 0.01 ? omega / (R * (1 + Math.cos(this.tilt))) : 0;
+    this.phi += precRate * dt;
+    this.psi += omega * dt;
+    this._wobble = precRate / (2 * Math.PI);
+    this.t += dt;
+    this.freqHist.push(this._wobble);
+    if (this.freqHist.length > 1200) this.freqHist.splice(0, this.freqHist.length - 1200);
+    if (frameCount % 8 === 0) pushSample(this._wobble);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const cx = W * 0.5, cy = H * 0.55;
+    const diskR = Math.min(W, H) * 0.28;
+    const tilt = this.tilt;
+    // draw the flat surface
+    ctx.fillStyle = "#1c2128"; ctx.fillRect(0, cy + diskR * 0.12, W, H - cy);
+    ctx.strokeStyle = "rgba(139,148,158,.3)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, cy + diskR*0.12); ctx.lineTo(W, cy + diskR*0.12); ctx.stroke();
+    // disk body (ellipse from tilt)
+    const ry = diskR * Math.cos(tilt);
+    ctx.save();
+    ctx.translate(cx + diskR * Math.sin(tilt) * Math.sin(this.phi) * 0.3, cy);
+    ctx.rotate(this.phi * 0.3); // slight spin visual
+    // outer ring
+    ctx.strokeStyle = "#8b949e"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.ellipse(0, 0, diskR, Math.max(ry, 4), 0, 0, 7); ctx.stroke();
+    // inner marking lines (show spin)
+    ctx.strokeStyle = "rgba(88,166,255,.5)"; ctx.lineWidth = 1.5;
+    for (let i = 0; i < 4; i++) {
+      const ang = this.psi + i * Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(diskR * 0.85 * Math.cos(ang), ry * 0.85 * Math.sin(ang));
+      ctx.stroke();
+    }
+    // center dot
+    ctx.fillStyle = "#58a6ff"; ctx.beginPath(); ctx.arc(0, 0, 4, 0, 7); ctx.fill();
+    ctx.restore();
+    // contact point glow
+    ctx.fillStyle = "rgba(248,81,73,.5)";
+    ctx.beginPath(); ctx.arc(cx, cy + diskR * 0.12, 3, 0, 7); ctx.fill();
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`tilt=${(tilt*180/Math.PI).toFixed(1)}°  ω=${(Math.sqrt(Math.max(0,this.E)/(this.P.I||1))).toFixed(2)}  wobble=${this._wobble.toFixed(1)} Hz  t=${this.t.toFixed(1)}s`, 12, 22);
+    if (this.tilt < 0.03) ctx.fillText("finite-time singularity — wobble→∞", 12, 36);
+  },
+  presets: [
+    { name: "Classic (slow spin-down)", params: { mu: 0.02 } },
+    { name: "Low friction (long run)", params: { mu: 0.005 } },
+    { name: "High friction (quick stop)", params: { mu: 0.08 } },
+    { name: "Heavy disk", params: { mu: 0.02, I: 3 } },
+  ],
+};
+
+// ==========================================================================
+//  BEAD ON A WIRE (Brachistochrone)
+// ==========================================================================
+const beadOnWire = {
+  id: "beadOnWire", label: "Bead on a Wire",
+  category: "Classical Dynamics",
+  hint: "A bead slides on an editable wire y(x) under gravity. The cycloid is the brachistochrone — fastest descent. Edit the wire shape and race beads on different profiles.",
+  histLabel: "Velocity v samples",
+  eqName: "wire(x, params)",
+  eqSig: "x: horizontal position [0..1] · returns: y (depth, positive downward)",
+  eqDesc: "y = A·(1 − cos(πx)) is the cycloid brachistochrone arch. Try a parabola, straight line, or a custom shape. The bead accelerates under gravity along the wire constraint.",
+  eqSpec: { argNames: ["x", "params"], mustReturn: true },
+  params: [
+    { key: "A",   label: "Depth A",       min: 0.1,  max: 3,   step: 0.05, value: 1.5 },
+    { key: "g",   label: "Gravity g",     min: 0.5,  max: 20,  step: 0.5,  value: 9.8 },
+    { key: "damp", label: "Friction",     min: 0,    max: 1,   step: 0.01, value: 0 },
+    { key: "n",   label: "Wire points",  min: 50,   max: 400, step: 10,   value: 200 },
+  ],
+  defaultCode:
+`// cycloid brachistochrone arch: y = A*(1 - cos(π*x))
+return params.A * (1 - Math.cos(Math.PI * x));
+
+// try — parabola (slower):
+// return params.A * x * x;
+
+// try — straight diagonal:
+// return params.A * x;`,
+  P: {}, x: 0, v: 0, t: 0, trail: [], _wirePts: [], _yMax: 0, _bestTime: null, _startTime: 0, _finished: false,
+  _buildWire() {
+    const n = Math.max(50, Math.round(this.P.n || 200));
+    const A = this.P.A || 1.5;
+    const pts = [];
+    let yMax = 0;
+    for (let i = 0; i <= n; i++) {
+      const xi = i / n;
+      let yi;
+      try { yi = this.eq(xi, this.P); } catch(e) { yi = 0; }
+      if (!isFinite(yi)) yi = 0;
+      pts.push([xi, yi]);
+      if (yi > yMax) yMax = yi;
+    }
+    this._wirePts = pts;
+    this._yMax = Math.max(0.1, yMax);
+  },
+  init() {
+    this.x = 0; this.v = 0; this.t = 0; this.trail = [];
+    this._bestTime = null; this._startTime = 0; this._finished = false;
+    this._buildWire();
+  },
+  layout() { this._buildWire(); },
+  onParam(key) { if (key === "A" || key === "n") this._buildWire(); },
+  onEquation() { this._buildWire(); },
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("bead reset"); },
+  _wireY(xi) {
+    const pts = this._wirePts;
+    if (xi <= 0) return pts[0][1];
+    if (xi >= 1) return pts[pts.length-1][1];
+    const s = xi * (pts.length - 1);
+    const i = Math.floor(s), f = s - i;
+    return pts[i][1] * (1-f) + pts[i+1][1] * f;
+  },
+  _wireDy(xi) {
+    const dx = 1e-4;
+    const xm = Math.max(0, xi - dx), xp = Math.min(1, xi + dx);
+    const h = (xp - xm) || dx;
+    return (this._wireY(xp) - this._wireY(xm)) / h;
+  },
+  measures() {
+    return [["x", this.x.toFixed(3)], ["v", this.v.toFixed(2)], ["t", this.t.toFixed(2)],
+            ["y", this._wireY(this.x).toFixed(2)]];
+  },
+  series() { return [["v", this.trail]]; },
+  xRange() { return [Math.min(0, ...this.trail) - 1, Math.max(1, ...(this.trail.length ? this.trail : [1]))]; },
+  step(dt) {
+    const g = this.P.g || 9.8, damp = this.P.damp || 0;
+    const dydx = this._wireDy(this.x);
+    const s = Math.sqrt(1 + dydx*dydx);
+    try {
+      const a = (g * dydx - damp * this.v) / (s * s);
+      if (isFinite(a)) { this.v += a * dt; this.x += this.v * dt / s; }
+    } catch (e) { eqRuntimeError(e); }
+    if (this.x < 0) { this.x = 0; this.v = Math.abs(this.v); }
+    if (this.x >= 1) {
+      this.x = 1; this.v = 0;
+      if (!this._finished) {
+        this._finished = true;
+        if (this._bestTime === null || this.t < this._bestTime) this._bestTime = this.t;
+      }
+    }
+    if (!this._finished) this.t += dt;
+    this.trail.push(this.v);
+    if (this.trail.length > 1200) this.trail.splice(0, this.trail.length - 1200);
+    if (frameCount % 4 === 0) pushSample(this.v);
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const pad = { l: 40, r: 20, t: 30, b: 40 };
+    const gx = W - pad.l - pad.r, gy = H - pad.t - pad.b;
+    const yScale = gy / Math.max(1, this._yMax * 1.2);
+    const xScale = gx;
+    // wire
+    ctx.strokeStyle = "rgba(139,148,158,.5)"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < this._wirePts.length; i++) {
+      const px = pad.l + this._wirePts[i][0] * xScale;
+      const py = pad.t + this._wirePts[i][1] * yScale;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    // bead
+    const bx = pad.l + this.x * xScale;
+    const by = pad.t + this._wireY(this.x) * yScale;
+    ctx.fillStyle = "#f85149";
+    ctx.beginPath(); ctx.arc(bx, by, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = "#0d1117";
+    ctx.beginPath(); ctx.arc(bx, by, 3, 0, 7); ctx.fill();
+    // start / end markers
+    const sy = pad.t + this._wirePts[0][1] * yScale;
+    const ey = pad.t + this._wirePts[this._wirePts.length-1][1] * yScale;
+    ctx.fillStyle = "#3fb950"; ctx.beginPath(); ctx.arc(pad.l, sy, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(pad.l + xScale, ey, 5, 0, 7); ctx.fill();
+    // gravity arrow
+    ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(W - 50, pad.t + 10); ctx.lineTo(W - 50, pad.t + 40); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W - 54, pad.t + 36); ctx.lineTo(W - 50, pad.t + 44); ctx.lineTo(W - 46, pad.t + 36); ctx.stroke();
+    ctx.fillStyle = "#58a6ff"; ctx.font = "10px ui-monospace, monospace"; ctx.fillText("g", W - 44, pad.t + 8);
+    // axes
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("x →", pad.l + gx/2 - 10, pad.t + gy + 20);
+    ctx.fillText("y ↓", pad.l - 28, pad.t + gy/2);
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`x=${this.x.toFixed(3)}  v=${this.v.toFixed(2)}  t=${this.t.toFixed(2)}s` + (this._bestTime !== null ? `  best=${this._bestTime.toFixed(3)}s` : ""), 12, 22);
+  },
+  presets: [
+    { name: "Cycloid (brachistochrone)", code: "return params.A * (1 - Math.cos(Math.PI * x));", params: { A: 1.5 } },
+    { name: "Parabola (slower)",         code: "return params.A * 2 * x * x;",                   params: { A: 1.5 } },
+    { name: "Straight diagonal",          code: "return params.A * 2 * x;",                       params: { A: 1.5 } },
+    { name: "Deep steep bowl",            code: "return params.A * (1 - Math.cos(Math.PI*x*x));", params: { A: 1.8 } },
+  ],
+};
+
+// ==========================================================================
+//  RUTHERFORD SCATTERING
+// ==========================================================================
+const rutherford = {
+  id: "rutherford", label: "Rutherford Scattering",
+  category: "Classical Dynamics",
+  hint: "A charged particle scatters off a fixed Coulomb centre. Trajectories are hyperbolic; the differential cross-section histogram builds up live. Edit the force exponent to see how scattering changes.",
+  histLabel: "Scattering angle θ (degrees)",
+  eqName: "force(r, params)",
+  eqSig: "r: distance from centre · returns: repulsive force magnitude (× 1/r² default)",
+  eqDesc: "Default F = k/r² (Coulomb). Try 1/r³ for long-range, 1/r⁴ for polarization, or add a short-range nuclear well.",
+  eqSpec: { argNames: ["r", "params"], mustReturn: true },
+  params: [
+    { key: "k",  label: "Coupling k",     min: 0.1,  max: 20,   step: 0.1,  value: 5 },
+    { key: "v0", label: "Speed v₀",       min: 0.5,  max: 5,    step: 0.1,  value: 2 },
+    { key: "n",  label: "Launches/frame",  min: 1,    max: 20,   step: 1,    value: 3 },
+  ],
+  defaultCode:
+`// Coulomb repulsion: F = k/r²
+return params.k / (r * r);
+
+// try — 1/r³ (longer range):
+// return params.k / (r * r * r);
+
+// try — short-range nuclear well + Coulomb:
+// const nuclear = r < 1 ? -20 * (1 - r) : 0;
+// return params.k / (r * r) + nuclear;`,
+  P: {}, particles: [], histogram: new Float64Array(72), count: 0, t: 0,
+  init() { this.particles = []; this.histogram.fill(0); this.count = 0; this.t = 0; },
+  layout() {},
+  onParam() {},
+  onPreset() { this.init(); },
+  drop(n) { this.init(); setStatus("scattering reset"); },
+  _spawn() {
+    const v0 = this.P.v0 || 2;
+    const b = (Math.random() - 0.5) * 4; // impact parameter
+    this.particles.push({ x: -2.5, y: b, vx: v0, vy: 0, born: this.t });
+  },
+  measures() {
+    const n = this.count || 1;
+    let mean = 0;
+    for (let i = 0; i < 72; i++) mean += this.histogram[i] * (i + 0.5) * 5;
+    return [["scattered", this.count], ["mean θ", (mean / n).toFixed(1) + "°"]];
+  },
+  series() { return [["dσ/dΩ", Array.from(this.histogram)]]; },
+  xRange() { return [0, 180]; },
+  step(dt) {
+    const P = this.P, soft = 0.15;
+    // spawn new particles
+    for (let i = 0; i < (P.n || 3); i++) this._spawn();
+    // integrate
+    for (let pi = this.particles.length - 1; pi >= 0; pi--) {
+      const p = this.particles[pi];
+      const r = Math.sqrt(p.x*p.x + p.y*p.y + soft*soft);
+      try {
+        const F = this.eq(r, P);
+        if (isFinite(F)) {
+          const fx = -F * p.x / r, fy = -F * p.y / r;
+          p.vx += fx * dt; p.vy += fy * dt;
+        }
+      } catch (e) { eqRuntimeError(e); }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      // remove if escaped (or backscattered far left / too old)
+      if (p.x > 5 || Math.abs(p.y) > 5 || p.x < -8 || this.t - p.born > 12) {
+        const deg = Math.abs(Math.atan2(p.vy, p.vx)) * 180 / Math.PI; // scatter angle from +x, 0..180
+        const bin = Math.min(71, Math.floor(deg / 5));
+        this.histogram[bin]++;
+        this.count++;
+        pushSample(deg);
+        this.particles.splice(pi, 1);
+      }
+    }
+    this.t += dt;
+  },
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    const cx = W * 0.4, cy = H * 0.45, sc = Math.min(W, H) * 0.07;
+    // target zone
+    ctx.strokeStyle = "rgba(139,148,158,.2)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, 0.15*sc, 0, 7); ctx.stroke();
+    // force centre
+    ctx.fillStyle = "#f85149"; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#e6edf3"; ctx.font = "10px ui-monospace, monospace"; ctx.fillText("+", cx - 3, cy - 8);
+    // particles
+    ctx.fillStyle = "rgba(88,166,255,.7)";
+    ctx.beginPath();
+    for (const p of this.particles) {
+      const sx = cx + p.x * sc, sy = cy + p.y * sc;
+      ctx.moveTo(sx + 2.5, sy); ctx.arc(sx, sy, 2.5, 0, 7);
+    }
+    ctx.fill();
+    // differential cross-section histogram (right side)
+    const hx = W * 0.62, hy = 30, hw = W * 0.34, hh = H * 0.55;
+    ctx.fillStyle = "#0d1117"; ctx.fillRect(hx, hy, hw, hh);
+    ctx.strokeStyle = "rgba(139,148,158,.3)"; ctx.strokeRect(hx, hy, hw, hh);
+    let hMax = 1;
+    for (let i = 0; i < 72; i++) if (this.histogram[i] > hMax) hMax = this.histogram[i];
+    const bw = hw / 72;
+    for (let i = 0; i < 72; i++) {
+      const bh = (this.histogram[i] / hMax) * (hh - 10);
+      const hue = (i / 72) * 200 + 200;
+      ctx.fillStyle = `hsl(${hue}, 70%, 55%)`;
+      ctx.fillRect(hx + i*bw, hy + hh - bh, bw - 1, bh);
+    }
+    ctx.fillStyle = "#8b949e"; ctx.font = "10px ui-monospace, monospace";
+    ctx.fillText("0°", hx - 4, hy + hh + 14);
+    ctx.fillText("180°", hx + hw - 14, hy + hh + 14);
+    ctx.fillText("dσ/dΩ", hx + hw/2 - 14, hy + hh + 14);
+    // HUD
+    ctx.fillStyle = "#e6edf3"; ctx.font = "13px Consolas,monospace";
+    ctx.fillText(`k=${this.P.k}  v₀=${this.P.v0}  N=${this.count}`, 12, 22);
+    if (this.count > 20) {
+      const peak = Math.max(...Array.from(this.histogram));
+      const peakBin = this.histogram.indexOf(peak);
+      ctx.fillText(`peak θ≈${(peakBin+0.5)*5|0}°`, 12, 36);
+    }
+  },
+  presets: [
+    { name: "Rutherford (Coulomb)",      params: { k: 5, v0: 2 } },
+    { name: "Strong repulsion",           params: { k: 15, v0: 1.5 } },
+    { name: "Fast particles",             params: { k: 5, v0: 4 } },
+    { name: "Weak long-range",            params: { k: 2, v0: 2 } },
+  ],
+};
+
+const MODES = [galton, projectile, forceField, pendulum, lorenz, orbits, waves, logistic, boids, solarSystem, rossler, brownian, decay, lagrange, oscillators, electric, lorentz, resonance, life, kuramoto, milkyway, universe, standing, doppler, packet, soliton, timbre, circlePi, polygonPi, doublePendulum, pendulumWave, vibratingString, fourier, billiard, duffing, idealGas, epidemic, forestFire, langton, spaceship, cockpit, syncPendula, collatz, mandelbrot, epicycles, newtonFractal, seriesZoo, standardMap, threeBody, eulerDisk, beadOnWire, rutherford];
 let modeIndex = 0;
 let frameCount = 0;
 
